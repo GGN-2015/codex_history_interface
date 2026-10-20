@@ -6,7 +6,10 @@ from .D_ChatMessage import D_ChatMessage
 
 @dataclass(frozen=True)
 class D_ChatExport:
-    """Visible conversation snapshot and local-file boundaries for an exporter."""
+    """Visible snapshot with per-message Unix times and local-file boundaries.
+
+    message_timestamps aligns with messages; an empty tuple means unavailable.
+    """
 
     title: str
     messages: list[D_ChatMessage]
@@ -14,3 +17,4 @@ class D_ChatExport:
     modified_at: float | None
     bases: tuple[Path, ...] = ()
     protected: tuple[Path, ...] = ()
+    message_timestamps: tuple[float | None, ...] = ()

@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ..Abstract import D_ChatId, D_ChatMessage, I_CodexInterface, I_HistoryRepository, I_TexExporter
+from ..Abstract.History.I_SearchConfig import I_SearchConfig
 from .Export.C_TexExporter import C_TexExporter
 from .History.C_HistoryRepository import C_HistoryRepository
 from .History.C_HistoryStore import C_HistoryStore
@@ -18,12 +19,18 @@ class C_CodexInterface(I_CodexInterface):
         databases: Iterable[str | os.PathLike] = (),
         repository: I_HistoryRepository | None = None,
         tex_exporter: I_TexExporter | None = None,
+        search_config: I_SearchConfig | None = None,
     ) -> None:
         databases = tuple(databases)
-        if repository is not None and (codex_home is not None or databases):
-            raise ValueError("Pass either repository or codex_home/databases, not both")
-        self._repository = repository if repository is not None else C_HistoryRepository(codex_home, databases=databases)
+        if repository is not None and (codex_home is not None or databases or search_config is not None):
+            raise ValueError("Pass either repository or codex_home/databases/search_config, not both")
+        self._repository = repository if repository is not None else C_HistoryRepository(codex_home, databases=databases, search_config=search_config)
         self._tex_exporter = tex_exporter if tex_exporter is not None else C_TexExporter()
+
+    def getSearchIndexPath(self) -> Path:
+        if isinstance(self._repository, C_HistoryRepository):
+            return self._repository.getSearchIndexPath()
+        raise AttributeError("The injected repository does not expose a local search index")
 
     @property
     def repository(self) -> I_HistoryRepository:

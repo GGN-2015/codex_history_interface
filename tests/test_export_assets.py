@@ -1,5 +1,6 @@
 import base64
 from pathlib import Path
+import re
 import shutil
 import struct
 import tempfile
@@ -8,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 import zlib
 
-from codex_history_interface import C_TexExporter, HistoryReadWarning, TexExportError, TexExportWarning
+from codex_history_interface import C_MarkdownLatexRenderer, C_TexExporter, HistoryReadWarning, TexExportError, TexExportWarning
 from codex_history_interface._assets import AssetBundle
 from test_export_tex import CHAT_ID, START, ExportFixture
 
@@ -60,6 +61,113 @@ class AssetExportTests(ExportFixture, unittest.TestCase):
         self.assertIn("{" + asset.name + "}", source)
         self.assertEqual(asset.read_bytes(), png_bytes())
         self.assertRegex(asset.name, r"^asset-[A-Za-z0-9_-]+\.png$")
+
+    def test_embedded_image_is_also_a_hyperlink_to_the_copied_file(self):
+        original = self.file("preview.png", png_bytes())
+        source = self.export("![预览](<" + original.as_posix() + ">)")
+        asset = self.assets()[0]
+        self.assertIn(r"\href{run:" + asset.name + r"}{\includegraphics[", source)
+
+    def test_embedded_base64_image_is_linked_to_the_decoded_copy(self):
+        image = "data:image/png;base64," + base64.b64encode(png_bytes()).decode("ascii")
+        source = self.export("![图](" + image + ")")
+        self.assertIn(r"\href{run:" + self.assets()[0].name + r"}{\includegraphics[", source)
+
+    def test_pdf_attachment_opens_the_copied_file_instead_of_a_document_destination(self):
+        original = self.file()
+        source = self.export("[论文](<" + original.as_posix() + ">)")
+        asset = self.assets()[0]
+        self.assertIn(r"\href{run:" + asset.name + "}{论文}", source)
+        self.assertNotIn(r"\href{file:" + asset.name, source)
+
+    def test_pdf_image_links_to_the_copied_pdf(self):
+        original = self.file()
+        source = self.export("![预览](<" + original.as_posix() + ">)")
+        self.assertIn(r"\href{run:" + self.assets()[0].name + r"}{\includegraphics[", source)
+
+    def test_pdf_uri_fragment_cannot_turn_the_copy_link_into_a_document_destination(self):
+        original = self.file("notes.pdf")
+        source = self.export("[论文](<" + original.as_uri() + "#page=2>)")
+        asset = self.assets()[0]
+        self.assertIn(r"\href{run:" + asset.name + "}{论文}", source)
+        self.assertNotIn("#page=2", source)
+        self.assertNotIn(r"\href{file:", source)
+
+    def test_multiple_pdf_attachments_have_distinct_external_file_targets(self):
+        originals = [self.file("one.pdf", b"one"), self.file("two.pdf", b"two")]
+        source = self.export("\n\n".join("[论文](<" + original.as_uri() + ">)" for original in originals))
+        targets = re.findall(r"\\href\{run:([^{}]+)\}", source)
+        self.assertEqual(set(targets), {asset.name for asset in self.assets()})
+        self.assertEqual(len(targets), 2)
+        self.assertNotIn(r"\href{file:", source)
+
+    def test_non_pdf_file_keeps_a_relative_launch_link(self):
+        original = self.file("report.txt")
+        source = self.export("[报告](<" + original.as_posix() + ">)")
+        self.assertIn(r"\href{run:" + self.assets()[0].name + "}{报告}", source)
+
+    def test_copied_filename_with_unicode_and_punctuation_has_a_relative_link(self):
+        original = self.file("中文 name_#%&{}.pdf")
+        source = self.export("[报告](<" + quote(original.as_posix(), safe="/:") + ">)")
+        asset = self.assets()[0]
+        self.assertIn(r"\href{run:" + asset.name + "}{报告}", source)
+        self.assertRegex(asset.name, r"^asset-[A-Za-z0-9_-]+\.pdf$")
+        self.assertNotIn(quote(original.as_posix(), safe="/:"), source)
+
+    def test_each_standalone_copied_dependency_has_a_resolvable_relative_hyperlink(self):
+        image = self.file("preview.png", png_bytes())
+        document = self.file()
+        text = self.file("report.txt")
+        source = self.export("![图](<" + image.as_posix() + ">)\n\n[论文](<" + document.as_posix() + ">)\n\n[文本](<" + text.as_posix() + ">)")
+        targets = re.findall(r"\\href\{(?:file|run):([^{}]+)\}", source)
+        self.assertEqual(set(targets), {asset.name for asset in self.assets()})
+        for target in targets:
+            with self.subTest(target=target):
+                self.assertEqual(Path(target).name, target)
+                self.assertTrue((self.output.parent / target).is_file())
+
+    def test_relative_links_survive_original_deletion_and_bundle_relocation(self):
+        originals = [self.file("preview.png", png_bytes()), self.file(), self.file("report.txt")]
+        answer = "\n\n".join(("!" if path.suffix == ".png" else "") + "[附件](<" + path.as_posix() + ">)" for path in originals)
+        source = self.export(answer)
+        assets = self.assets()
+        targets = re.findall(r"\\href\{(?:file|run):([^{}]+)\}", source)
+        self.assertEqual(set(targets), {asset.name for asset in assets})
+        for original in originals:
+            original.unlink()
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder)
+            shutil.copyfile(self.output, destination / self.output.name)
+            for asset in assets:
+                shutil.copyfile(asset, destination / asset.name)
+            for target in targets:
+                self.assertEqual((destination / target).read_bytes(), (self.output.parent / target).read_bytes())
+
+    def test_inline_code_used_as_link_label_does_not_create_nested_hyperlinks(self):
+        original = self.file()
+        source = self.export("[`" + original.as_posix() + "`](<" + original.as_posix() + ">)")
+        self.assertEqual(source.count(r"\href{"), 1)
+        self.assertEqual(len(self.assets()), 1)
+
+    def test_linked_image_keeps_the_preview_and_only_the_explicit_outer_link(self):
+        image = self.file("preview.png", png_bytes())
+        document = self.file()
+        source = self.export("[![预览](<" + image.as_posix() + ">)](<" + document.as_posix() + ">)")
+        copied = {asset.suffix: asset.name for asset in self.assets()}
+        self.assertEqual(source.count(r"\href{"), 1)
+        self.assertIn(r"\href{run:" + copied[".pdf"] + r"}{\includegraphics[", source)
+        self.assertIn("{" + copied[".png"] + "}", source)
+
+    def test_remote_image_used_as_a_link_label_does_not_create_nested_hyperlinks(self):
+        source = self.export("[![预览](https://example.invalid/preview.png)](https://example.invalid/report)")
+        self.assertEqual(source.count(r"\href{"), 1)
+        self.assertIn(r"\href{https://example.invalid/report}", source)
+        self.assertEqual(self.assets(), [])
+
+    def test_local_file_and_launch_links_have_visible_highlight_colors(self):
+        source = self.export("回答")
+        self.assertIn("filecolor=blue", source)
+        self.assertIn("runcolor=blue", source)
 
     def test_relative_source_uses_original_session_working_directory(self):
         self.file("figures/image.png", png_bytes())
@@ -313,6 +421,7 @@ class AssetExportTests(ExportFixture, unittest.TestCase):
             source = self.export("[文件](file://server/share/private.pdf)")
         self.assertEqual(self.assets(), [])
         self.assertNotIn(r"\href{run:", source)
+        self.assertNotIn(r"\href{file:", source)
 
     def test_assets_from_archived_conversation_are_copied(self):
         original = self.file()
@@ -324,6 +433,35 @@ class AssetExportTests(ExportFixture, unittest.TestCase):
         self.path.replace(archived)
         self.reader.exportToTex(CHAT_ID, self.output)
         self.assertEqual(len(self.assets()), 1)
+
+
+class RemoteUrlExportTests(unittest.TestCase):
+    def setUp(self):
+        self.renderer = C_MarkdownLatexRenderer()
+
+    def test_url_tilde_is_literal_not_a_text_formatting_macro(self):
+        reference = "https://example.invalid/~author/book.html"
+        source = self.renderer.link(reference, "资源")
+        self.assertEqual(source, r"\href{" + reference + "}{资源}")
+        self.assertNotIn(r"\textasciitilde", source)
+        self.assertNotIn("~{}", source)
+
+    def test_existing_percent_escapes_and_url_syntax_are_preserved(self):
+        source = self.renderer.link("https://example.invalid/a_b?q=a%20b&n=1#top", "资源")
+        self.assertEqual(source, r"\href{https://example.invalid/a\_b?q=a\%20b\&n=1\#top}{资源}")
+        self.assertNotIn("2520", source)
+
+    def test_unsafe_url_characters_are_uri_encoded_not_printed_text_macros(self):
+        source = self.renderer.link("https://example.invalid/a{b}^c?q=a b", "资源")
+        self.assertEqual(source, r"\href{https://example.invalid/a\%7Bb\%7D\%5Ec?q=a\%20b}{资源}")
+
+    def test_unicode_url_path_uses_utf8_percent_encoding(self):
+        source = self.renderer.link("https://example.invalid/中文", "资源")
+        self.assertEqual(source, r"\href{https://example.invalid/\%E4\%B8\%AD\%E6\%96\%87}{资源}")
+
+    def test_markdown_links_keep_tildes_and_escape_only_tex_metacharacters(self):
+        source = self.renderer.render("[资源](https://example.invalid/~author/a_b?q=1&n=2#topic)")
+        self.assertIn(r"\href{https://example.invalid/~author/a\_b?q=1\&n=2\#topic}{资源}", source)
 
 
 class PortableAssetExportTests(ExportFixture, unittest.TestCase):

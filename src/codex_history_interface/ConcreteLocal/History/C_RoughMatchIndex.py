@@ -2,16 +2,12 @@ from collections import Counter
 from dataclasses import dataclass
 import heapq
 import math
-import re
 from typing import Iterable, Iterator
 import unicodedata
 
 from ...Abstract.History.D_ChatId import D_ChatId
-
-
-CJK_RANGES = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\U00020000-\U0003134f"
-TOKEN_PATTERN = re.compile(f"[{CJK_RANGES}]+|[^\\W_{CJK_RANGES}]+")
-CJK_PATTERN = re.compile(f"[{CJK_RANGES}]")
+from ...Abstract.History.I_SearchConfig import I_SearchConfig
+from .C_SearchConfig import C_SearchConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,31 +21,30 @@ class _SearchDocument:
 class C_RoughMatchIndex:
     """Incremental in-memory inverted index with field-weighted BM25 and character n-grams."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: I_SearchConfig | None = None) -> None:
+        self._config = config if config is not None else C_SearchConfig()
         self._postings: dict[str, dict[str, tuple[int, int]]] = {}
         self._documents: dict[str, _SearchDocument] = {}
         self._title_length = 0
         self._body_length = 0
 
-    @staticmethod
-    def validateQuery(content: str, maxCnt: int) -> bool:
+    def validateQuery(self, content: str, maxCnt: int) -> bool:
         if not isinstance(content, str):
             raise TypeError("content must be a string")
         if isinstance(maxCnt, bool) or not isinstance(maxCnt, int):
             raise TypeError("maxCnt must be an integer")
         if maxCnt < 0:
             raise ValueError("maxCnt must be greater than or equal to zero")
-        return maxCnt > 0 and TOKEN_PATTERN.search(unicodedata.normalize("NFKC", content)) is not None
+        return maxCnt > 0 and self._config.getTokenPattern().search(unicodedata.normalize("NFKC", content)) is not None
 
     @staticmethod
     def _normalize(text: str) -> str:
         return unicodedata.normalize("NFKC", text).casefold()
 
-    @classmethod
-    def _features(cls, text: str) -> Iterator[str]:
-        for matched in TOKEN_PATTERN.finditer(cls._normalize(text)):
+    def _features(self, text: str) -> Iterator[str]:
+        for matched in self._config.getTokenPattern().finditer(self._normalize(text)):
             token = matched.group()
-            if CJK_PATTERN.match(token):
+            if self._config.getCjkPattern().match(token):
                 for character in token:
                     yield "u:" + character
                 for offset in range(len(token) - 1):
@@ -61,6 +56,9 @@ class C_RoughMatchIndex:
 
     def getChatList(self) -> list[str]:
         return list(self._documents)
+
+    def _getPostings(self, term: str) -> dict[str, tuple[int, int]]:
+        return self._postings.get(term, {})
 
     def removeDocument(self, chat_id: str) -> bool:
         document = self._documents.pop(chat_id, None)
@@ -117,7 +115,7 @@ class C_RoughMatchIndex:
         norms: dict[str, tuple[float, float]] = {}
         scores: dict[str, float] = {}
         for term in sorted(features):
-            postings = self._postings.get(term)
+            postings = self._getPostings(term)
             if not postings:
                 continue
             inverse_frequency = math.log1p((count - len(postings) + 0.5) / (len(postings) + 0.5))

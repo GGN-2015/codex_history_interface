@@ -91,6 +91,7 @@ class C_HistoryStore:
                 raise HistoryUnavailableError(f"Explicit database not found: {path}")
         self.conversations: dict[str, Conversation] = {}
         self._journal_paths: set[Path] = set()
+        self._journal_signatures: dict[Path, tuple[int, int, int, int]] = {}
         self.notices: list[str] = []
         self.loaded = False
         self.recognized = False
@@ -235,8 +236,10 @@ class C_HistoryStore:
             path = path.resolve()
             if any(os.path.samefile(path, existing) for existing in conversation.paths if existing.exists()):
                 return
-            conversation.paths[path] = path.stat().st_size
+            status = path.stat()
+            conversation.paths[path] = status.st_size
             self._journal_paths.add(path)
+            self._journal_signatures[path] = status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino
         except OSError as error:
             self.warn(f"Cannot inspect journal {path}: {error}")
 
@@ -266,6 +269,7 @@ class C_HistoryStore:
     def refresh(self) -> None:
         self.conversations.clear()
         self._journal_paths.clear()
+        self._journal_signatures.clear()
         self.recognized = False
         self.refresh_metadata()
         for directory in ("sessions", "archived_sessions"):

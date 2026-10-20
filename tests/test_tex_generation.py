@@ -6,7 +6,7 @@ from unittest.mock import patch
 import warnings
 
 from codex_history_interface import TexExportWarning
-from codex_history_interface.__main__ import main
+from codex_history_interface import C_CommandLine
 from markdown_it import MarkdownIt
 
 from codex_history_interface._export_tex import MarkdownLatexRenderer, math_source, render_document
@@ -281,7 +281,7 @@ class PackageGenerationTests(ExportFixture, unittest.TestCase):
         output = io.StringIO()
         error = io.StringIO()
         with redirect_stdout(output), redirect_stderr(error):
-            code = main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
+            code = C_CommandLine.main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), str(self.output.resolve()))
         self.assertEqual(error.getvalue(), "")
@@ -313,7 +313,7 @@ class PackageGenerationTests(ExportFixture, unittest.TestCase):
         error = io.StringIO()
         with warnings.catch_warnings(), redirect_stdout(output), redirect_stderr(error):
             warnings.simplefilter("always", TexExportWarning)
-            code = main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
+            code = C_CommandLine.main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), str(self.output.resolve()))
         self.assertIn("TexExportWarning", error.getvalue())

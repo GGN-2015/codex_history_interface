@@ -10,8 +10,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from codex_history_interface import C_CodexInterface, ChatNotFoundError, HistoryUnavailableError, I_CodexInterface, TexExportError, TexExportWarning
-from codex_history_interface.__main__ import main
+from codex_history_interface import C_CodexInterface, C_SearchConfig, ChatNotFoundError, HistoryUnavailableError, I_CodexInterface, TexExportError, TexExportWarning
+from codex_history_interface import C_CommandLine
 from codex_history_interface._export_tex import MarkdownLatexRenderer, local_time_text, math_source, render_document
 from codex_history_interface._tex_math import check_document
 
@@ -63,6 +63,9 @@ class ExportFixture:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        cache_directory = patch.object(C_SearchConfig, "getDefaultIndexDirectory", return_value=self.root / "search-index")
+        cache_directory.start()
+        self.addCleanup(cache_directory.stop)
         self.home = self.root / "Codex 数据"
         self.home.mkdir()
         self.database = self.home / "state_9.sqlite"
@@ -259,7 +262,7 @@ class ExportTests(ExportFixture, unittest.TestCase):
         output = io.StringIO()
         error = io.StringIO()
         with redirect_stdout(output), redirect_stderr(error):
-            code = main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
+            code = C_CommandLine.main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), str(self.output.resolve()))
         self.assertTrue(self.output.is_file())
@@ -271,7 +274,7 @@ class ExportTests(ExportFixture, unittest.TestCase):
         error = io.StringIO()
         output = io.StringIO()
         with redirect_stderr(error), redirect_stdout(output), self.assertWarns(TexExportWarning):
-            code = main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
+            code = C_CommandLine.main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), str(self.output.resolve()))
         self.assertTrue(self.output.is_file())
@@ -290,7 +293,7 @@ class ExportTests(ExportFixture, unittest.TestCase):
     def test_cli_rejects_removed_compiler_and_timeout_options(self):
         for option, value in (("--compiler", "xelatex"), ("--timeout", "120")):
             with self.subTest(option=option), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-                main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output), option, value])
+                C_CommandLine.main(["--home", str(self.home), "export-tex", CHAT_ID, str(self.output), option, value])
             self.assertEqual(error.exception.code, 2)
         self.assertFalse(self.output.exists())
 

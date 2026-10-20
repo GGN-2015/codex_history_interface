@@ -35,6 +35,7 @@ class C_TexExporter(I_TexExporter):
         return self.exportDocument(
             destination, chat.title, chat.messages, chat.created_at, chat.modified_at,
             overwrite=overwrite, bases=chat.bases, protected=chat.protected,
+            message_timestamps=chat.message_timestamps,
             warn=repository.reportWarning,
             render_warn=lambda text: repository.reportWarning(text, category=TexExportWarning),
         )
@@ -50,6 +51,7 @@ class C_TexExporter(I_TexExporter):
         overwrite: bool = False,
         bases: tuple[Path, ...] = (),
         protected: tuple[Path, ...] = (),
+        message_timestamps: tuple[float | None, ...] = (),
         warn: Callable[[str], None] | None = None,
         render_warn: Callable[[str], None] | None = None,
     ) -> Path:
@@ -62,7 +64,7 @@ class C_TexExporter(I_TexExporter):
             raise FileExistsError(f"Destination already exists: {destination}; pass overwrite=True explicitly")
         with tempfile.TemporaryDirectory(prefix="codex-history-assets-") as folder:
             bundle = self.asset_bundle_type(Path(folder), destination, bases=bases, protected=protected, warn=warn)
-            source = self.document_renderer.render(title, messages, created_at, modified_at, assets=bundle, warn=render_warn)
+            source = self.document_renderer.render(title, messages, created_at, modified_at, assets=bundle, warn=render_warn, message_timestamps=message_timestamps)
             destination.parent.mkdir(parents=True, exist_ok=True)
             try:
                 bundle.publish()

@@ -6,6 +6,7 @@ from .I_CodexInterface import TITLE_MISSING, I_CodexInterface
 
 
 __all__ = [
+    "I_SearchConfig",
     "Export",
     "History",
     "I_CodexInterface",
@@ -16,3 +17,4 @@ __all__ = [
     "D_ChatMessage",
     "TITLE_MISSING",
 ]
+from .History.I_SearchConfig import I_SearchConfig

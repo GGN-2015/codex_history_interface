@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 [project.scripts]
-codex-history = "codex_history_interface.__main__:main"
+codex-history = "codex_history_interface.ConcreteLocal.C_CommandLine:C_CommandLine.main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

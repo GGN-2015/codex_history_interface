@@ -19,7 +19,7 @@ from codex_history_interface import (
     I_CodexInterface,
     TITLE_MISSING,
 )
-from codex_history_interface.__main__ import main
+from codex_history_interface import C_CommandLine
 from codex_history_interface._storage import read_database
 
 
@@ -556,7 +556,7 @@ class InterfaceTests(unittest.TestCase):
             with self.subTest(command=command):
                 output = io.StringIO()
                 with redirect_stdout(output):
-                    code = main(["--home", str(self.home), command, *arguments])
+                    code = C_CommandLine.main(["--home", str(self.home), command, *arguments])
                 self.assertEqual(code, 0)
                 self.assertEqual(json.loads(output.getvalue()), expected)
 
@@ -565,7 +565,7 @@ class InterfaceTests(unittest.TestCase):
         self.connection.commit()
         output = io.StringIO()
         with redirect_stdout(output):
-            code = main(["--home", str(self.home), "title", ACTIVE])
+            code = C_CommandLine.main(["--home", str(self.home), "title", ACTIVE])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), "<TitleMissing>Original prompt")
 
@@ -574,14 +574,14 @@ class InterfaceTests(unittest.TestCase):
         self.connection.commit()
         output = io.StringIO()
         with redirect_stdout(output):
-            code = main(["--home", str(self.home), "title", ACTIVE])
+            code = C_CommandLine.main(["--home", str(self.home), "title", ACTIVE])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), "中" * 40 + "...")
 
     def test_cli_unknown_id_returns_structured_error_and_exit_two(self):
         output = io.StringIO()
         with redirect_stderr(output):
-            code = main(["--home", str(self.home), "title", "unknown"])
+            code = C_CommandLine.main(["--home", str(self.home), "title", "unknown"])
         self.assertEqual(code, 2)
         self.assertEqual(json.loads(output.getvalue())["error"], "ChatNotFoundError")
 

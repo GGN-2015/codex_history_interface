@@ -20,6 +20,7 @@ TEXT_ESCAPES = {
     "&": r"\&", "#": r"\#", "_": r"\_", "%": r"\%",
     "^": r"\textasciicircum{}", "~": r"\textasciitilde{}",
 }
+URL_ESCAPES = {character: TEXT_ESCAPES[character] for character in "#$%&_"}
 USER_MESSAGE_LABELS = {
     "Files mentioned by the user": "用户提及的文件",
     "My request for Codex": "用户请求",
@@ -67,12 +68,20 @@ PREAMBLE = r"""\documentclass[UTF8,fontset=fandol]{ctexart}
 \definecolor{CodexCodeBorder}{HTML}{D0D7DE}
 \definecolor{CodexHighlight}{HTML}{FFF2A8}
 \usepackage[margin=24mm]{geometry}
-\usepackage[unicode,colorlinks=true,urlcolor=blue,linkcolor=blue,breaklinks=true,linktoc=all]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[unicode,colorlinks=true,urlcolor=blue,linkcolor=blue,filecolor=blue,runcolor=blue,breaklinks=true,linktoc=all]{hyperref}
 \setcounter{tocdepth}{1}
 \renewcommand{\contentsname}{目录}
 \setlength{\emergencystretch}{3em}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.5em}
+\setlength{\headheight}{16pt}
+\fancypagestyle{plain}{
+\fancyhf{}
+\fancyhead[C]{\normalfont\small\CodexConversationTitle}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}}
 \pagestyle{plain}
 \setcounter{MaxMatrixCols}{64}
 \providecommand{\degree}{\ensuremath{^{\circ}}}
@@ -427,19 +436,23 @@ class C_MarkdownLatexRenderer:
     def finish(self, source: str) -> str:
         return self.references.resolve(source, escape=tex_escape, warn=self.warn)
 
-    def link(self, reference: str, label: str, *, image: bool = False) -> str:
+    def link(self, reference: str, label: str, *, image: bool = False, linked: bool = False) -> str:
         reference = reference.strip()
         if remote_reference(reference):
             validate_text(reference)
-            return r"\href{" + tex_escape(reference) + "}{" + label + "}"
+            target = self.parser.normalizeLink(reference)
+            encoded = "".join(URL_ESCAPES.get(character, character) for character in target)
+            return label if linked else r"\href{" + encoded + "}{" + label + "}"
         if self.assets is None:
             return label
         asset = self.assets.add(reference)
         if asset is None:
             return label + "（本地附件不可用，未复制）"
+        target = "run:" + asset.filename
         if image and asset.staged.suffix.lower() in NATIVE_IMAGES:
-            return "\n\\par\\noindent\\includegraphics[width=\\linewidth,height=0.65\\textheight,keepaspectratio]{" + asset.filename + "}\\par\n"
-        return r"\href{run:" + asset.filename + "}{" + label + "}"
+            graphic = r"\includegraphics[width=\linewidth,height=0.65\textheight,keepaspectratio]{" + asset.filename + "}"
+            return graphic if linked else "\n\\par\\noindent" + r"\href{" + target + "}{" + graphic + "}\\par\n"
+        return label if linked else r"\href{" + target + "}{" + label + "}"
 
     def text(self, text: str, *, linked: bool = False) -> str:
         pattern = re.compile(
@@ -478,7 +491,8 @@ class C_MarkdownLatexRenderer:
                 label = r"\texttt{" + wrappable_text(content, code=True) + "}"
                 if self.assets is not None and re.match(r"^(?:[A-Za-z]:[\\/]|/(?!/)|~/|file:)", content):
                     label = r"\texttt{" + wrappable_text(unquote(content).replace("\\", "/").rsplit("/", 1)[-1], code=True) + "}"
-                    label = self.link(content, label)
+                    if not links:
+                        label = self.link(content, label)
                 pieces.append(label)
             elif kind == "math_inline":
                 pieces.append(self.math(token.content, display=False, original=self.original_math(token)))
@@ -511,7 +525,7 @@ class C_MarkdownLatexRenderer:
                 pieces.append(self.link(reference, label))
             elif kind == "image":
                 label = "[图片：" + tex_escape(token.content or "未提供描述") + "]"
-                pieces.append(self.link(token.attrGet("src") or "", label, image=not (compact or styles or links)))
+                pieces.append(self.link(token.attrGet("src") or "", label, image=not (compact or styles), linked=bool(links)))
             elif token.children:
                 pieces.append(self.inline(token.children, compact=compact))
             else:
