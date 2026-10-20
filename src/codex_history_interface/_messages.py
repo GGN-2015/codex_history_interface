@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from .interface import ChatMessage
+from .interface import D_ChatMessage
 
 
 CONTEXT_TAGS = (
@@ -21,7 +21,7 @@ class MessageCandidate:
     content: str
     source: str
 
-    def public(self) -> ChatMessage:
+    def public(self) -> D_ChatMessage:
         return {"role": self.role, "content": self.content}
 
 

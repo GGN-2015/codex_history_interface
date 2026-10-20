@@ -90,7 +90,7 @@ class InterfaceTests(unittest.TestCase):
     def test_abstract_interface_cannot_be_instantiated(self):
         with self.assertRaises(TypeError):
             I_CodexInterface()
-        self.assertEqual(I_CodexInterface.__abstractmethods__, {"getChatList", "getChatTitle", "getChatMessage"})
+        self.assertEqual(I_CodexInterface.__abstractmethods__, {"getChatList", "getChatTitle", "getChatMessage", "getLastMessageTimeStamp", "getCreateTimeStamp", "exportToTex"})
 
     def test_concrete_reader_implements_requested_interface(self):
         self.assertIsInstance(self.reader(), I_CodexInterface)
@@ -149,13 +149,13 @@ class InterfaceTests(unittest.TestCase):
                 self.index([{"id": ACTIVE, "title": value}])
                 self.assertEqual(self.reader().getChatTitle(ACTIVE), "<TitleMissing>Original prompt")
 
-    def test_legacy_title_preserves_whitespace_and_is_not_truncated(self):
+    def test_legacy_title_truncation_preserves_prefix_and_whitespace(self):
         title = "  旧标题 <原文>" * 100 + "\n末尾 "
         self.connection.execute("UPDATE threads SET name = NULL, title = ? WHERE id = ?", (title, ACTIVE))
         self.connection.commit()
-        self.assertEqual(self.reader().getChatTitle(ACTIVE), "<TitleMissing>" + title)
+        self.assertEqual(self.reader().getChatTitle(ACTIVE), ("<TitleMissing>" + title)[:40] + "...")
         self.index([{"id": ACTIVE, "title": title}])
-        self.assertEqual(self.reader().getChatTitle(ACTIVE), "<TitleMissing>" + title)
+        self.assertEqual(self.reader().getChatTitle(ACTIVE), ("<TitleMissing>" + title)[:40] + "...")
 
     def test_archived_missing_display_name_prefixes_available_title(self):
         self.connection.execute("UPDATE threads SET name = NULL WHERE id = ?", (ARCHIVED,))
@@ -174,11 +174,67 @@ class InterfaceTests(unittest.TestCase):
         self.connection.commit()
         self.assertEqual(reader.getChatTitle(ACTIVE), "Recovered display name")
 
-    def test_display_name_preserves_all_whitespace_and_is_not_truncated(self):
+    def test_display_name_truncation_preserves_leading_whitespace(self):
         name = "  很长的标题" * 100 + "\n末尾 "
         self.connection.execute("UPDATE threads SET name = ? WHERE id = ?", (name, ACTIVE))
         self.connection.commit()
-        self.assertEqual(self.reader().getChatTitle(ACTIVE), name)
+        self.assertEqual(self.reader().getChatTitle(ACTIVE), name[:40] + "...")
+
+    def test_database_display_name_40_character_boundary(self):
+        for length in (39, 40, 41):
+            with self.subTest(length=length):
+                title = "x" * length
+                self.connection.execute("UPDATE threads SET name = ? WHERE id = ?", (title, ACTIVE))
+                self.connection.commit()
+                expected = "x" * 40 + "..." if length > 40 else title
+                self.assertEqual(self.reader().getChatTitle(ACTIVE), expected)
+
+    def test_index_display_name_40_character_boundary(self):
+        self.connection.execute("UPDATE threads SET name = NULL WHERE id = ?", (ACTIVE,))
+        self.connection.commit()
+        for length in (39, 40, 41):
+            with self.subTest(length=length):
+                title = "x" * length
+                self.index([{"id": ACTIVE, "thread_name": title}])
+                expected = "x" * 40 + "..." if length > 40 else title
+                self.assertEqual(self.reader().getChatTitle(ACTIVE), expected)
+
+    def test_unicode_title_counts_characters_not_bytes(self):
+        for character in ("中", "😀"):
+            for length in (40, 41):
+                with self.subTest(character=character, length=length):
+                    title = character * length
+                    self.connection.execute("UPDATE threads SET name = ? WHERE id = ?", (title, ACTIVE))
+                    self.connection.commit()
+                    expected = character * 40 + "..." if length > 40 else title
+                    self.assertEqual(self.reader().getChatTitle(ACTIVE), expected)
+
+    def test_legacy_title_boundary_counts_missing_prefix(self):
+        for source in ("database", "index"):
+            for length in (39, 40, 41):
+                with self.subTest(source=source, length=length):
+                    title = "x" * (length - len(TITLE_MISSING))
+                    self.connection.execute("UPDATE threads SET name = NULL, title = ? WHERE id = ?", (title, ACTIVE))
+                    self.connection.commit()
+                    self.index([{"id": ACTIVE, "title": title}] if source == "index" else [])
+                    expected = TITLE_MISSING + "x" * (min(length, 40) - len(TITLE_MISSING))
+                    if length > 40:
+                        expected += "..."
+                    self.assertEqual(self.reader().getChatTitle(ACTIVE), expected)
+
+    def test_archived_long_title_is_truncated(self):
+        self.connection.execute("UPDATE threads SET name = ? WHERE id = ?", ("归" * 41, ARCHIVED))
+        self.connection.commit()
+        self.assertEqual(self.reader().getChatTitle(ARCHIVED), "归" * 40 + "...")
+
+    def test_long_messages_are_not_truncated(self):
+        user = "长问题" * 100
+        answer = "长答案" * 100
+        self.write_log(ACTIVE, events=self.events(ACTIVE, user, answer))
+        self.assertEqual(self.reader().getChatMessage(ACTIVE), [
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": answer},
+        ])
 
     def test_duplicate_index_uses_newest_timestamp_not_last_physical_line(self):
         self.connection.execute("UPDATE threads SET name = NULL WHERE id = ?", (ACTIVE,))
@@ -216,7 +272,7 @@ class InterfaceTests(unittest.TestCase):
     def test_exact_id_required_instead_of_prefix_or_title(self):
         reader = self.reader()
         for identity in (ACTIVE[:8], "Active display name", "unknown"):
-            for method in (reader.getChatTitle, reader.getChatMessage):
+            for method in (reader.getChatTitle, reader.getChatMessage, reader.getLastMessageTimeStamp, reader.getCreateTimeStamp):
                 with self.subTest(identity=identity, method=method.__name__), self.assertRaises(ChatNotFoundError):
                     method(identity)
 
@@ -405,6 +461,8 @@ class InterfaceTests(unittest.TestCase):
         for identity in reader.getChatList():
             reader.getChatTitle(identity)
             reader.getChatMessage(identity)
+            reader.getLastMessageTimeStamp(identity)
+            reader.getCreateTimeStamp(identity)
         self.assertEqual(before, {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths})
 
     def test_read_only_connection_observes_uncheckpointed_wal(self):
@@ -510,6 +568,15 @@ class InterfaceTests(unittest.TestCase):
             code = main(["--home", str(self.home), "title", ACTIVE])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue()), "<TitleMissing>Original prompt")
+
+    def test_cli_title_truncates_long_title(self):
+        self.connection.execute("UPDATE threads SET name = ? WHERE id = ?", ("中" * 41, ACTIVE))
+        self.connection.commit()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main(["--home", str(self.home), "title", ACTIVE])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue()), "中" * 40 + "...")
 
     def test_cli_unknown_id_returns_structured_error_and_exit_two(self):
         output = io.StringIO()

@@ -18,6 +18,10 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("title", "messages"):
         command = commands.add_parser(name)
         command.add_argument("chat_id", help="Exact conversation ID from the list command")
+    export = commands.add_parser("export-tex", help="Export visible rounds and local assets to .tex without compiling")
+    export.add_argument("chat_id", help="Exact conversation ID from the list command")
+    export.add_argument("output_path", help="Destination .tex file outside the Codex data directory")
+    export.add_argument("--overwrite", action="store_true", help="Replace an existing destination after preparing the document and assets")
     arguments = parser.parse_args(argv)
     try:
         reader = C_CodexInterface(arguments.home, databases=arguments.db)
@@ -25,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
             result = reader.getChatList()
         elif arguments.command == "title":
             result = reader.getChatTitle(arguments.chat_id)
+        elif arguments.command == "export-tex":
+            result = str(reader.exportToTex(arguments.chat_id, arguments.output_path, overwrite=arguments.overwrite))
         else:
             result = reader.getChatMessage(arguments.chat_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))

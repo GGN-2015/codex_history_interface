@@ -15,7 +15,7 @@ from .interface import TITLE_MISSING
 
 
 UUID_PATTERN = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
-THREAD_COLUMNS = ("id", "name", "title", "archived", "rollout_path", "updated_at_ms", "updated_at", "created_at_ms", "created_at")
+THREAD_COLUMNS = ("id", "name", "title", "archived", "rollout_path", "updated_at_ms", "updated_at", "created_at_ms", "created_at", "cwd")
 ITEM_TABLES = ("thread_items", "thread_realtime_items")
 HISTORY_TABLES = (*ITEM_TABLES, "thread_turns", "thread_history_projection_state")
 
@@ -27,6 +27,7 @@ class Conversation:
     index: dict = field(default_factory=dict)
     paths: dict[Path, int] = field(default_factory=dict)
     projections: list[tuple[Path, str]] = field(default_factory=list)
+    working_directories: list[str] = field(default_factory=list)
 
 
 def timestamp(value: object) -> float | None:
@@ -88,10 +89,10 @@ class HistoryStore:
         self.loaded = False
         self.recognized = False
 
-    def warn(self, text: str) -> None:
+    def warn(self, text: str, *, category: type[Warning] = HistoryReadWarning) -> None:
         if text not in self.notices:
             self.notices.append(text)
-            warnings.warn(text, HistoryReadWarning, stacklevel=3)
+            warnings.warn(text, category, stacklevel=3)
 
     def conversation(self, identity: str) -> Conversation:
         if identity not in self.conversations:
@@ -210,10 +211,12 @@ class HistoryStore:
 
     def load_journal(self, path: Path) -> None:
         identity = None
+        working_directory = None
         for ordinal, record in self.records(path):
             payload = record.get("payload")
             if record.get("type") == "session_meta" and isinstance(payload, dict):
                 identity = payload.get("id") or payload.get("session_id")
+                working_directory = payload.get("cwd")
                 break
             if ordinal >= 8:
                 break
@@ -223,7 +226,10 @@ class HistoryStore:
                 self.warn(f"Cannot identify a Codex conversation ID for journal {path}; no synthetic ID was created")
                 return
             identity = match.group()
-        self.add_path(self.conversation(identity), path)
+        conversation = self.conversation(identity)
+        if isinstance(working_directory, str) and working_directory not in conversation.working_directories:
+            conversation.working_directories.append(working_directory)
+        self.add_path(conversation, path)
         self.recognized = True
 
     def refresh(self) -> None:
@@ -287,7 +293,8 @@ class HistoryStore:
             try:
                 with read_database(path) as connection:
                     available = columns(connection, table)
-                    selected = [name for name in ("item_json", "item_id", "turn_id") if name in available]
+                    time_fields = ("timestamp_ms", "timestamp", "created_at_ms", "created_at")
+                    selected = [name for name in ("item_json", "item_id", "turn_id", *time_fields) if name in available]
                     order = [name for name in ("rollout_ordinal", "created_at_ms", "turn_id", "item_id") if name in available]
                     query = f'SELECT ' + ", ".join(f'"{name}"' for name in selected) + f' FROM "{table}" WHERE thread_id = ?'
                     if order:
@@ -308,6 +315,8 @@ class HistoryStore:
                         final_id = final_items.get(values.get("turn_id"))
                         if item.get("type") == "agentMessage" and final_id and (values.get("item_id") or item.get("id")) != final_id:
                             continue
-                        yield f"{path}#{table}", {"type": "projection", "payload": item}
+                        record = {"type": "projection", "payload": item}
+                        record.update({name: values[name] for name in time_fields if name in values})
+                        yield f"{path}#{table}", record
             except (OSError, sqlite3.Error) as error:
                 self.warn(f"Cannot read projected messages for {conversation.identity}: {error}")
