@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from .interface import D_ChatMessage
+from .Abstract.History.D_ChatMessage import D_ChatMessage
 
 
 CONTEXT_TAGS = (

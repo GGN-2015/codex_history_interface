@@ -2,7 +2,7 @@ import argparse
 import json
 import sys
 
-from .client import C_CodexInterface
+from .ConcreteLocal.C_CodexInterface import C_CodexInterface
 from .errors import CodexHistoryError
 
 

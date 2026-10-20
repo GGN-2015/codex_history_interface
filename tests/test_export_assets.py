@@ -8,7 +8,7 @@ from unittest.mock import patch
 from urllib.parse import quote
 import zlib
 
-from codex_history_interface import HistoryReadWarning, TexExportError, TexExportWarning
+from codex_history_interface import C_TexExporter, HistoryReadWarning, TexExportError, TexExportWarning
 from codex_history_interface._assets import AssetBundle
 from test_export_tex import CHAT_ID, START, ExportFixture
 
@@ -147,7 +147,7 @@ class AssetExportTests(ExportFixture, unittest.TestCase):
 
     def test_tex_publication_failure_rolls_back_only_new_attachments(self):
         original = self.file()
-        with patch("codex_history_interface._export_tex.write_document", side_effect=OSError("cannot publish")):
+        with patch.object(C_TexExporter, "writeDocument", side_effect=OSError("cannot publish")):
             with self.assertRaises(OSError):
                 self.export("[附件](<" + original.as_posix() + ">)")
         self.assertEqual(self.assets(), [])
@@ -200,6 +200,52 @@ class AssetExportTests(ExportFixture, unittest.TestCase):
         self.assertEqual(len(self.assets()), 1)
         self.assertIn(r"\href{run:", source)
         self.assertIn(r"\begin{CodexCodeBlock}", source)
+
+    def test_absolute_file_line_and_column_references_copy_the_base_file(self):
+        original = self.file("source.md")
+        references = [original.as_posix() + suffix for suffix in (":1", ":12:4", "#L8", "#L8C3", "#L8-L12", "#L8C3-L12C7")]
+        source = self.export("\n\n".join("[源文件](<" + reference + ">)" for reference in references))
+        self.assertEqual(len(self.assets()), 1)
+        self.assertEqual(self.assets()[0].read_bytes(), original.read_bytes())
+        self.assertEqual(source.count(r"\href{run:"), len(references))
+
+    def test_relative_file_line_reference_is_not_mistaken_for_a_uri_scheme(self):
+        original = self.file("source.md")
+        source = self.export("[源文件](source.md:12:4)")
+        self.assertEqual(self.assets()[0].read_bytes(), original.read_bytes())
+        self.assertIn(r"\href{run:", source)
+
+    def test_encoded_file_line_and_column_suffixes_are_supported(self):
+        original = self.file("source with spaces.md")
+        reference = quote(original.as_posix(), safe="/") + "%3A12%3A4"
+        source = self.export("[源文件](<" + reference + ">)")
+        self.assertEqual(self.assets()[0].read_bytes(), original.read_bytes())
+        self.assertIn(r"\href{run:", source)
+
+    def test_file_uri_line_and_fragment_references_copy_the_base_file(self):
+        original = self.file("source.md")
+        source = self.export("[行](" + original.as_uri() + ":12:4)\n\n[锚点](" + original.as_uri() + "#L12C4)")
+        self.assertEqual(len(self.assets()), 1)
+        self.assertEqual(self.assets()[0].read_bytes(), original.read_bytes())
+        self.assertEqual(source.count(r"\href{run:"), 2)
+
+    def test_inline_code_line_reference_keeps_the_label_and_copies_the_file(self):
+        original = self.file("source.md")
+        source = self.export("`" + original.as_posix() + ":12:4`")
+        self.assertEqual(self.assets()[0].read_bytes(), original.read_bytes())
+        self.assertIn("source.md:12:4", source)
+        self.assertIn(r"\href{run:", source)
+
+    def test_encoded_literal_hash_in_an_existing_filename_is_not_a_line_anchor(self):
+        original = self.file("source#L12")
+        source = self.export("[文件](<" + quote(original.as_posix(), safe="/:") + ">)")
+        self.assertEqual(self.assets()[0].read_bytes(), original.read_bytes())
+        self.assertIn(r"\href{run:", source)
+
+    def test_network_line_references_are_rejected_without_probing_the_filesystem(self):
+        bundle = AssetBundle(self.root, self.output)
+        with patch.object(Path, "is_file", side_effect=AssertionError("must not access network files")), self.assertWarns(HistoryReadWarning):
+            self.assertIsNone(bundle.local_path(r"\\server\share\source.md:12:4"))
 
     def test_webpages_and_remote_images_are_links_not_downloads(self):
         with patch("urllib.request.urlopen", side_effect=AssertionError("no downloads")), patch("socket.create_connection", side_effect=AssertionError("no network")):

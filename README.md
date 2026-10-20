@@ -24,7 +24,85 @@ if chat_ids:
         print(message["role"], message["content"])
 ```
 
-### 六个接口
+## 面向对象结构与复用
+
+参照 `Simple3D_TriangleRender` 的组织方式，公开抽象类使用 `I_` 前缀，具体实现使用 `C_` 前缀，数据类型使用 `D_` 前缀；主要类型位于各自的同名文件中。`Abstract` 定义契约，`ConcreteLocal` 提供本地实现，每一级子包通过 `__init__.py` 和显式 `__all__` 导出所属类型。
+
+```text
+codex_history_interface/
+├── Abstract/
+│   ├── I_CodexInterface.py
+│   ├── History/
+│   │   ├── I_HistoryRepository.py
+│   │   ├── D_ChatMessage.py
+│   │   └── D_ChatExport.py
+│   └── Export/
+│       └── I_TexExporter.py
+├── ConcreteLocal/
+│   ├── C_CodexInterface.py
+│   ├── History/
+│   │   ├── C_HistoryRepository.py
+│   │   └── C_HistoryStore.py
+│   └── Export/
+│       ├── C_TexExporter.py
+│       ├── C_TexDocumentRenderer.py
+│       ├── C_MarkdownLatexRenderer.py
+│       └── C_AssetBundle.py
+├── client.py
+└── interface.py
+```
+
+| 类型 | 职责 |
+| --- | --- |
+| `I_CodexInterface` / `C_CodexInterface` | 保留原六方法外观；通过组合委托给历史仓库和导出器，不负责数据库解析或 Markdown 排版 |
+| `I_HistoryRepository` / `C_HistoryRepository` | 只读查询 ID、展示标题、可见消息与时间，构造带附件来源和保护路径的 `D_ChatExport` 快照 |
+| `C_HistoryStore` | 定位数据目录、只读访问 SQLite、索引、活动/归档 JSONL 与投影，并汇集诊断 |
+| `I_TexExporter` / `C_TexExporter` | 从仓库取得快照，验证目标路径，管理附件暂存、发布和失败回滚；不执行编译 |
+| `C_TexDocumentRenderer` | 组装标题、秒级本机时间、中文目录和按轮次分节的完整 TeX 文档；每份文档创建独立 Markdown 渲染状态 |
+| `C_MarkdownLatexRenderer` | 将 Markdown 结构与公式转换为 TeX，管理该文档内的公式编号和引用 |
+| `C_AssetBundle` | 解析、暂存和复制本地附件，生成相对引用；网页链接不下载 |
+
+可以从顶层、分层父包或同名类型模块导入同一类，例如：
+
+```python
+from codex_history_interface.Abstract import I_CodexInterface, I_HistoryRepository, I_TexExporter
+from codex_history_interface.ConcreteLocal import C_CodexInterface, C_HistoryRepository, C_TexExporter
+from codex_history_interface.ConcreteLocal.Export.C_TexDocumentRenderer import C_TexDocumentRenderer
+
+repository: I_HistoryRepository = C_HistoryRepository()
+exporter: I_TexExporter = C_TexExporter(document_renderer=C_TexDocumentRenderer())
+reader: I_CodexInterface = C_CodexInterface(repository=repository, tex_exporter=exporter)
+
+chat_ids = reader.getChatList()
+if chat_ids:
+    reader.exportToTex(chat_ids[0], r"C:\exports\conversation.tex")
+```
+
+仓库与导出器也可独立使用，不必创建外观对象：
+
+```python
+from codex_history_interface.ConcreteLocal.History import C_HistoryRepository
+from codex_history_interface.ConcreteLocal.Export import C_MarkdownLatexRenderer, C_TexDocumentRenderer, C_TexExporter
+
+repository = C_HistoryRepository()
+chat_ids = repository.getChatList()
+if chat_ids:
+    snapshot = repository.getChatExport(chat_ids[0])
+    source = C_TexDocumentRenderer().render(
+        snapshot.title, snapshot.messages, snapshot.created_at, snapshot.modified_at,
+    )
+    output = C_TexExporter().exportToTex(repository, chat_ids[0], r"C:\exports\conversation.tex")
+
+fragment = C_MarkdownLatexRenderer().render("**强调**与公式 $x^2$。")
+```
+
+`C_TexDocumentRenderer.render()` 只返回 TeX 字符串，不读取历史、不创建文件；需要复制附件时使用 `C_TexExporter.exportToTex()`。`C_TexExporter.exportDocument()` 也能直接接收调用方提供的标题、消息、时间与 `bases`/`protected` 路径，按相同的暂存、相对引用和覆盖规则发布文件，不要求有 Codex 数据库。`protected` 中的文件或目录不能作为输出或附件来源。
+
+扩展时实现 `I_HistoryRepository` 可替换数据来源，实现 `I_TexExporter` 可替换整个导出策略；也可以派生 `C_TexDocumentRenderer`、通过 `renderer_type` 注入 `C_MarkdownLatexRenderer` 子类，或通过 `asset_bundle_type` 注入 `C_AssetBundle` 子类。各对象独立持有状态，文档之间不共享公式/消息计数；字符串转义、时间解析与 Markdown 规则回调等无状态细节保留为内部辅助函数，不机械包装成对象。
+
+兼容原来的 `from codex_history_interface import C_CodexInterface`、`client.C_CodexInterface`、`interface.I_CodexInterface` / `D_ChatMessage`，这些入口导出相同的类对象。原构造参数 `codex_home`、`databases`、六个方法和 CLI 命令保持不变，新增的 `repository`、`tex_exporter` 仅为可选的关键字注入参数；注入仓库时不能同时指定本地数据路径。
+
+## 六个接口
 
 | 方法 | 返回值 | 说明 |
 | --- | --- | --- |
@@ -94,9 +172,11 @@ chat_id = reader.getChatList()[0]
 output = reader.exportToTex(chat_id, Path.home() / "Desktop" / "conversation.tex")
 ```
 
-- 标题与 `getChatTitle()` 使用相同的展示名、缺失前缀和 40 字符截断规则。副标题显示创建时间、最后修改时间，均转换为本机默认时区并带 UTC 偏移；缺失时间明确显示“未知”。
+- 标题与 `getChatTitle()` 使用相同的展示名、缺失前缀和 40 字符截断规则。副标题显示创建时间、最后修改时间，均转换为本机默认时区并带 UTC 偏移，精确到秒、不显示小数秒，也不四舍五入；缺失时间明确显示“未知”。这只影响导出展示，不降低两个时间戳接口的原有精度。
 - 最后修改时间优先读取 `threads.updated_at_ms`、`threads.updated_at`，其次取索引对应字段，仍缺失时使用最后可见消息时间。它与 `getLastMessageTimeStamp()` 的“最后用户消息/最终答复时间”不是同一个概念。
 - 每次用户提问开始一个 `section`，其中分为“用户提问”和“AI 回答”。同轮多个最终输出完整保留；孤立答复或尚无答复的轮次明确标注，不编造正文。不导出思考、进度、系统/开发者提示词、工具日志或底层历史 JSON。
+- 副标题后自动生成中文“目录”，仅列出每轮对话的 `section`，正文从下一页开始。目录标题与页码均通过 `hyperref` 链接到对应轮次，PDF 也保留 section 书签。用户自行编译时通常需要运行两遍，使自动目录和页码完整生成；包本身不提供编译功能。
+- 用户消息中的独立提示标题 `Files mentioned by the user`、`My request for Codex` 默认显示为“用户提及的文件”“用户请求”。只在导出排版时本地化，不修改 `getChatMessage()` 的原文，也不替换代码、引用、列表、普通句子或助手答复中的相同文字。
 - Markdown 表格转换为可跨页、重复加粗表头的 `longtable`；保留单元格对齐、行内格式和 `<br>` 换行。公式或行内代码中的 `|` 不会被误分成额外列。
 - 行内/独立数学公式及常见 AMS 环境保留为数学排版；支持紧接正文、列表或引用的多行 `\[...\]`，公式中的独立 `=` 行不会误判为 Markdown 标题。相邻公式和公式后的正文完整保留。常见 Unicode 数学符号转为等价标准 TeX，公式内部的空行规整为合法数学空白；不改变数学结论。
 - 保留 `\boxed` 方框、数学下划线、上下标、分式、矩阵、对齐、重音等常见公式结构；支持标准颜色名和混色，以及 `\fbox`、`\colorbox`、`\fcolorbox`。`\text{...}` 中的字面下划线等特殊字符安全转义，不把其中的 Unicode 正文误改成数学命令。
@@ -107,6 +187,8 @@ output = reader.exportToTex(chat_id, Path.home() / "Desktop" / "conversation.tex
 - 本地 PNG/JPEG/PDF 图片用 `includegraphics` 嵌入，其他图片格式复制后作为可点击附件保留。历史记录中明确保存的 base64 图片解码为同目录图片文件，不把 base64 或原始 JSON 写进文档；历史只保留占位符且没有可定位文件的附件不能凭空恢复。缺失、不可用或受保护的本地附件在文档中标注“本地附件不可用，未复制”，并通过 `HistoryReadWarning` 和 `reader.diagnostics` 告警，不保留失效的原始绝对路径链接。
 - HTTP/HTTPS 网页、远程图片只生成蓝色高亮的可点击超链接，**不下载页面或远程图片**。本地附件使用相对 `run:` 文件链接；部分 PDF 阅读器可能要求确认后才打开本地附件。
 - 成功的导出只保留指定的 UTF-8 `.tex` 和所需附件副本，不生成 PDF、编译日志或辅助文件。目标必须位于 Codex 数据目录之外，不能替换任何已识别的历史文件。默认不覆盖已有 `.tex`，确需覆盖时传入 `overwrite=True`；新目标的父目录会在文档与附件准备完成后创建。发布失败会清理此次新建的附件，不删除先前已有的副本。
+
+本地文件引用支持 `文件名:行号`、`文件名:行号:列号` 和 `#L12C4` / `#L12-L18` 定位后缀；导出时复制实际文件，标签仍保留原来的定位信息，不把行号当作 Windows 文件名或备用数据流。网络文件路径仍不探测或复制。
 
 #### 安全生成与局部兼容处理
 
@@ -153,6 +235,14 @@ reader = C_CodexInterface(
 
 SQLite 正常读取 WAL 可能参与锁和共享内存协调；“只读”指不修改历史内容，不等同于保证整个文件系统没有锁/共享内存活动。不可删除 WAL、SHM 或锁文件来解决读取错误。
 
+## 开发验证
+
+```powershell
+python -m unittest discover -s tests
+```
+
+现有 343 项测试包括原 309 项历史读取、时间、CLI、TeX 和附件回归、27 项面向对象设计回归，以及 7 项文件行列号引用回归。功能回归测试不依赖 TeX 编译器。
+
 ## 命令行（可选）
 
 列表、标题、消息和 TeX 导出均有命令行入口，不需要生成内联脚本；两个数值时间戳方法通过 Python 接口调用：
@@ -165,24 +255,3 @@ codex-history export-tex '完整对话ID' 'C:\exports\conversation.tex'
 ```
 
 也可使用 `python -m codex_history_interface`。全局 `--home`、可重复的 `--db` 参数放在子命令之前。导出子命令只接受 `--overwrite` 可选开关，不接受 `--compiler` 或 `--timeout`。结果为 UTF-8 JSON 输出到标准输出（导出成功时为目标绝对路径）；个别内容的 `TexExportWarning` 输出到标准错误，成功导出的退出码仍为 `0`。真正的操作错误输出到标准错误且退出码为 `2`；程序本身不向历史目录写文件。
-
-## 开发测试
-
-```powershell
-python -m pip install -e .
-python -B -m unittest discover -s tests -v
-```
-
-测试只使用临时合成数据，不读取真实历史，不联网，也不调用 TeX 编译器。导出测试在空 `PATH` 且编译器查找/子进程调用被禁止时仍可运行；没有因缺少 TeX 而跳过的测试。真实数据验证另行只读执行，私人历史、标题及正文不随项目发布。兼容性以实际 schema 为准；这些本地持久化格式并非稳定的公共 API。
-
-### 本次验证记录
-
-2026-10-20，在 Windows 上使用 Python 3.12.14、3.13.13，各通过 296 项测试，零跳过。其中 179 项覆盖 TeX 生成、附件打包、局部兼容处理、结构检查和排版。其余回归覆盖六个抽象接口、创建及最后消息时间、秒/毫秒/ISO 8601 换算与缺失值、时间来源优先级、标题 39/40/41 字符边界、中文与 emoji 字符计数、缺失展示名时的原标题拼接与回退顺序、展示名更新、归档记录、消息筛选、镜像合并、只读连接、WAL、自动定位、损坏数据和命令行调用。测试命令如上；生成规则和结构测试不等同于实际运行编译器。
-
-导出回归覆盖多行/相邻公式和长链接、复杂的两轮中文/表格/公式/代码文档、归档文档、边界损坏或危险公式片段保留原文且继续导出其余内容、颜色/方框/下划线/代码块样式、单元格里的数学与代码竖线，以及图片/附件/网页链接在原始文件删除且导出目录搬移后的相对引用。还覆盖数学命令和参数原样保留、未知命令不误报、Markdown/代码/公式各自转义、注释不吞定界符或注册引用、显示环境在不同上下文中的包裹、重复标签、跨消息前向引用、缺失引用、宽表格、深层列表/引用、告警与 CLI 成功退出、附件同名冲突、重复导出、失败回滚、原始 cwd、缺失附件、嵌入图片解码和远程资源不下载。验证只检查代码行为和生成文本结构，不声称检查了最终 PDF 的外观。
-
-另对既有真实示例进行只读纯导出复验：4 轮、8 条可见消息，4 个附件副本，源日志 SHA-256 不变。在禁止编译器查找和子进程调用的条件下通过静态检查；一个原始文件此前已不存在，保留明确的缺失附件告警，不替换或编造文件。
-
-另以只读方式核对本机快照：207 个任务（82 个未归档、125 个已归档），全部 ID/标题与独立数据库及索引读取并应用相同截断规则后的结果一致。其中 188 个有持久化展示名；缺少展示名的 19 个中，11 个使用 `"<TitleMissing>" + 数据库原标题` 作为截断前的标题，8 个没有可用标题字符串、只返回标记。全部任务中有 19 个标题超过 40 字符，正确返回前 40 字符加 `...`。之前在 App 侧栏确认的 23 个标题冲突样本按相同截断规则比对均匹配，未声称对 207 个任务逐一进行界面验证。
-
-未归档、已归档各选择一个真实消息样本，分别为 4 条、2 条可见消息，与独立提取的用户/最终答复逐字一致；两个样本的创建时间、最后消息时间也与独立只读提取结果一致。源 JSONL 前后 SHA-256 不变，零告警。真实历史验证文件只保存在开发工作区，不放入此仓库或分发包。

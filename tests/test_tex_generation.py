@@ -141,7 +141,7 @@ class MarkdownMathContractTests(unittest.TestCase):
 
     def test_code_fences_do_not_enter_the_math_preparation_layer(self):
         original = "```tex\n$$\\input{secret} | α_1$$\n```"
-        with patch("codex_history_interface._export_tex.prepare_math", side_effect=AssertionError("code must stay literal")):
+        with patch("codex_history_interface.ConcreteLocal.Export.C_MarkdownLatexRenderer.prepare_math", side_effect=AssertionError("code must stay literal")):
             source = self.document(original)
         self.assertIn(r"\begin{CodexCodeBlock}", source)
         self.assertNotIn(r"\input{", source)

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import math
 
 from ._messages import visible_message
-from ._storage import Conversation, HistoryStore
+from .ConcreteLocal.History.C_HistoryStore import C_HistoryStore as HistoryStore, Conversation
 
 
 TIME_FIELDS = ("timestamp_ms", "timestamp", "created_at_ms", "created_at")
