@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from ..Abstract import D_ChatMessage, I_CodexInterface, I_HistoryRepository, I_TexExporter
+from ..Abstract import D_ChatId, D_ChatMessage, I_CodexInterface, I_HistoryRepository, I_TexExporter
 from .Export.C_TexExporter import C_TexExporter
 from .History.C_HistoryRepository import C_HistoryRepository
 from .History.C_HistoryStore import C_HistoryStore
@@ -49,6 +49,12 @@ class C_CodexInterface(I_CodexInterface):
 
     def getChatList(self) -> list[str]:
         return self._repository.getChatList()
+
+    def getChatListInTimeRange(self, timestamp1: float, timestamp2: float) -> list[str]:
+        return self._repository.getChatListInTimeRange(timestamp1, timestamp2)
+
+    def roughMatch(self, content: str, maxCnt: int) -> list[D_ChatId]:
+        return self._repository.roughMatch(content, maxCnt)
 
     def getChatTitle(self, chat_id: str) -> str:
         return self._repository.getChatTitle(chat_id)

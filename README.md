@@ -1,6 +1,6 @@
 # codex_history_interface
 
-读取当前用户本地 Codex 历史的 Python 库。采用面向对象设计：抽象类 `I_CodexInterface` 定义六个方法，`C_CodexInterface` 提供只读访问和 TeX 导出实现；不依赖 Skill、Codex App 自动化或 OpenAI API。Markdown 转换依赖随安装自动安装的 `markdown-it-py`、`mdit-py-plugins`：成熟解析器负责文档结构，公式正文尽量原样保留，生成器负责包裹和必要转义。未闭合或涉及危险 TeX 操作的个别片段作为原文展示并告警，不阻断整篇导出。不查找或调用编译器，也不生成 PDF；运行导出不需要安装 TeX。
+读取当前用户本地 Codex 历史的 Python 库。采用面向对象设计：抽象类 `I_CodexInterface` 定义八个方法，`C_CodexInterface` 提供只读访问、非 AI 模糊检索和 TeX 导出实现；不依赖 Skill、Codex App 自动化或 OpenAI API。Markdown 转换依赖随安装自动安装的 `markdown-it-py`、`mdit-py-plugins`：成熟解析器负责文档结构，公式正文尽量原样保留，生成器负责包裹和必要转义。未闭合或涉及危险 TeX 操作的个别片段作为原文展示并告警，不阻断整篇导出。不查找或调用编译器，也不生成 PDF；运行导出不需要安装 TeX。
 
 ## 安装与使用
 
@@ -34,6 +34,7 @@ codex_history_interface/
 │   ├── I_CodexInterface.py
 │   ├── History/
 │   │   ├── I_HistoryRepository.py
+│   │   ├── D_ChatId.py
 │   │   ├── D_ChatMessage.py
 │   │   └── D_ChatExport.py
 │   └── Export/
@@ -42,7 +43,8 @@ codex_history_interface/
 │   ├── C_CodexInterface.py
 │   ├── History/
 │   │   ├── C_HistoryRepository.py
-│   │   └── C_HistoryStore.py
+│   │   ├── C_HistoryStore.py
+│   │   └── C_RoughMatchIndex.py
 │   └── Export/
 │       ├── C_TexExporter.py
 │       ├── C_TexDocumentRenderer.py
@@ -54,9 +56,11 @@ codex_history_interface/
 
 | 类型 | 职责 |
 | --- | --- |
-| `I_CodexInterface` / `C_CodexInterface` | 保留原六方法外观；通过组合委托给历史仓库和导出器，不负责数据库解析或 Markdown 排版 |
+| `I_CodexInterface` / `C_CodexInterface` | 提供八方法外观，含时间区间查询及模糊检索；通过组合委托给历史仓库和导出器，不负责数据库解析或 Markdown 排版 |
 | `I_HistoryRepository` / `C_HistoryRepository` | 只读查询 ID、展示标题、可见消息与时间，构造带附件来源和保护路径的 `D_ChatExport` 快照 |
 | `C_HistoryStore` | 定位数据目录、只读访问 SQLite、索引、活动/归档 JSONL 与投影，并汇集诊断 |
+| `C_RoughMatchIndex` | 可独立复用的内存倒排索引，增量维护标题/正文词频，以字符 n-gram 和字段加权 BM25 返回相关性最高的 ID；只依赖 Python 标准库 |
+| `D_ChatId` | 不可变的对话 ID 值类型；`roughMatch()` 返回该类型，兼容既有字符串 ID 接口及 JSON 序列化，通过 `.value` 读取原始字符串 |
 | `I_TexExporter` / `C_TexExporter` | 从仓库取得快照，验证目标路径，管理附件暂存、发布和失败回滚；不执行编译 |
 | `C_TexDocumentRenderer` | 组装标题、秒级本机时间、中文目录和按轮次分节的完整 TeX 文档；每份文档创建独立 Markdown 渲染状态 |
 | `C_MarkdownLatexRenderer` | 将 Markdown 结构与公式转换为 TeX，管理该文档内的公式编号和引用 |
@@ -98,22 +102,24 @@ fragment = C_MarkdownLatexRenderer().render("**强调**与公式 $x^2$。")
 
 `C_TexDocumentRenderer.render()` 只返回 TeX 字符串，不读取历史、不创建文件；需要复制附件时使用 `C_TexExporter.exportToTex()`。`C_TexExporter.exportDocument()` 也能直接接收调用方提供的标题、消息、时间与 `bases`/`protected` 路径，按相同的暂存、相对引用和覆盖规则发布文件，不要求有 Codex 数据库。`protected` 中的文件或目录不能作为输出或附件来源。
 
-扩展时实现 `I_HistoryRepository` 可替换数据来源，实现 `I_TexExporter` 可替换整个导出策略；也可以派生 `C_TexDocumentRenderer`、通过 `renderer_type` 注入 `C_MarkdownLatexRenderer` 子类，或通过 `asset_bundle_type` 注入 `C_AssetBundle` 子类。各对象独立持有状态，文档之间不共享公式/消息计数；字符串转义、时间解析与 Markdown 规则回调等无状态细节保留为内部辅助函数，不机械包装成对象。
+扩展时实现 `I_HistoryRepository` 可替换数据来源，实现 `I_TexExporter` 可替换整个导出策略；也可以派生 `C_TexDocumentRenderer`、通过 `renderer_type` 注入 `C_MarkdownLatexRenderer` 子类，或通过 `asset_bundle_type` 注入 `C_AssetBundle` 子类。各对象独立持有状态，文档之间不共享公式/消息计数；字符串转义、时间解析与 Markdown 规则回调等无状态细节保留为内部辅助函数，不机械包装成对象。自定义历史仓库也需要实现新增的抽象方法 `getChatListInTimeRange()` 和 `roughMatch()`，后者必须返回 `list[D_ChatId]`，保证注入后仍提供相同的查询语义与返回类型。
 
 兼容原来的 `from codex_history_interface import C_CodexInterface`、`client.C_CodexInterface`、`interface.I_CodexInterface` / `D_ChatMessage`，这些入口导出相同的类对象。原构造参数 `codex_home`、`databases`、六个方法和 CLI 命令保持不变，新增的 `repository`、`tex_exporter` 仅为可选的关键字注入参数；注入仓库时不能同时指定本地数据路径。
 
-## 六个接口
+## 八个接口
 
 | 方法 | 返回值 | 说明 |
 | --- | --- | --- |
 | `getChatList()` | `list[str]` | 全部本地对话的完整 ID，默认同时包含未归档、已归档和状态不明的记录；按可用更新时间倒序，无数量上限 |
+| `getChatListInTimeRange(timestamp1, timestamp2)` | `list[str]` | 返回在 Unix 秒级闭区间内创建或有过修改记录的完整 ID；包含归档对话、去重，顺序与 `getChatList()` 一致 |
+| `roughMatch(content, maxCnt)` | `list[D_ChatId]` | 对标题及用户/最终答复做非 AI 模糊检索，按相关性降序返回最多 `maxCnt` 个对话 ID 对象；包含归档对话 |
 | `getChatTitle(chat_id)` | `str` | 读取持久化展示名；缺少展示名时使用 `"<TitleMissing>" + 已有标题字符串`，无可用标题时仅用标记；最终标题超过 40 字符时取前 40 字符再加 `...` |
 | `getChatMessage(chat_id)` | `list[D_ChatMessage]` | 按日志顺序排列的用户消息和 Codex 最终答复 |
 | `getLastMessageTimeStamp(chat_id)` | `float \| None` | 用户消息及最终答复中最新的可用 Unix 秒级时间戳；没有可用消息时间时返回 `None` |
 | `getCreateTimeStamp(chat_id)` | `float \| None` | 对话创建时间的 Unix 秒级时间戳；没有可用创建时间时返回 `None` |
 | `exportToTex(chat_id, output_path, *, overwrite=False)` | `pathlib.Path` | 导出标题、本机时区副标题和按轮次分节的用户/最终答复，返回目标 `.tex` 文件的绝对路径；个别内容的排版兼容问题通过告警报告，不执行编译 |
 
-`chat_id` 必须是 `getChatList()` 返回的完整 ID，不接受标题或 ID 前缀。`D_ChatMessage` 是普通字典的类型定义，实际返回值可直接序列化：
+`chat_id` 必须是上述列表/检索方法返回的完整 ID，不接受标题或 ID 前缀。`D_ChatMessage` 是普通字典的类型定义，实际返回值可直接序列化：
 
 ```python
 [
@@ -149,6 +155,79 @@ last_message_at = reader.getLastMessageTimeStamp(chat_id)
 - 最后消息时间取与 `getChatMessage()` 相同可见性规则下的用户消息、最终答复记录的最大有效时间戳，优先读取记录外层时间，再尝试 payload 时间。没有可见 JSONL 消息时才回退到 SQLite 投影的消息时间；使用投影时发出覆盖限制警告。
 - 不将 `updated_at`、标题重命名时间、归档时间、思考/工具事件时间或文件修改时间冒充消息时间或创建时间。可见 JSONL 消息缺少时间时，不用另一份投影的时间填补。仅有元数据或索引的任务仍可查询，缺少相应时间返回 `None`，而不是伪造当前时间。
 - 两个方法每次调用都会重新读取本地数据，同时支持未归档和已归档任务；ID 校验与原有方法相同，访问仍严格只读。
+
+### 时间区间查询
+
+```python
+from datetime import datetime
+from codex_history_interface import C_CodexInterface
+
+reader = C_CodexInterface()
+timestamp1 = datetime(2026, 10, 19, 0, 0, 0).timestamp()
+timestamp2 = datetime(2026, 10, 20, 18, 0, 0).timestamp()
+for chat_id in reader.getChatListInTimeRange(timestamp1, timestamp2):
+    print(chat_id, reader.getChatTitle(chat_id))
+```
+
+- 输入是 Unix 秒级数值（`int` 或 `float`），示例中的无时区 `datetime` 按本机默认时区转换为时间戳；不手动增加或减去时差，不将输入猜测为毫秒。原始存储中的秒、毫秒和 ISO 8601 时间则按现有规则统一到 Unix 秒。
+- 区间包含两个端点：`timestamp1 <= 时间 <= timestamp2`；两者相等可查询某一精确时刻，小数秒不会被取整。起点大于终点、NaN、无穷大或无法转换为有限浮点数的整数抛出 `ValueError`；字符串、布尔值、`datetime` 等非数值参数抛出 `TypeError`。
+- 查询 SQLite 会话的创建、更新、归档时间，完整 `session_index.jsonl`（包括同一 ID 的旧记录），活动和归档 JSONL 的事件时间，以及 SQLite 历史投影的记录时间、轮次开始/结束时间和条目时间；同一时间字段有有效毫秒值时优先使用毫秒值。即使最后修改时间已经超出区间，只要中间某次修改仍有区间内的时间记录，也会命中。
+- 修改记录包括已保存的重命名、归档及内部运行事件的时间。这只用于筛选对话 ID，不改变 `getChatMessage()` 和 TeX 导出的用户/最终答复筛选规则，也不返回思考正文或原始 JSON。
+- 默认包含未归档、已归档和状态不明的对话。每个 ID 只返回一次，按 `getChatList()` 的顺序排列；没有匹配记录时返回 `[]`。每次查询只刷新一次历史清单，所有访问保持只读。
+- 仅根据本地仍保存的实际时间记录匹配；不把创建至最后更新之间的整个跨度当成持续修改，不使用文件修改时间，不猜测缺失的时间。若中间修改记录已被清理，仅凭当前 `updated_at` 无法还原这段历史。不可读或损坏来源仍通过 `HistoryReadWarning` 和 `diagnostics` 报告。
+
+### 非 AI 模糊检索
+
+```python
+from codex_history_interface import C_CodexInterface, D_ChatId
+
+reader = C_CodexInterface()
+chat_ids: list[D_ChatId] = reader.roughMatch("Qt 截骨规划界面", maxCnt=5)
+for chat_id in chat_ids:
+    print(chat_id.value, reader.getChatTitle(chat_id))
+
+other_ids = reader.roughMatch("markdwon table", maxCnt=3)
+```
+
+**返回与范围**：`content` 是待查找的字符串，`maxCnt` 是最多返回多少项。返回 `list[D_ChatId]`，每项是实际的不可变 ID 对象，代表完整对话 ID，不是标题、原始 JSON 或人工整理的摘要。结果按相关性降序排列，相同分数按 ID 字典序排序；不会重复 ID，也不会用零相关记录补足数量。空白、无可检索文字、`maxCnt=0` 或无命中返回 `[]`。非字符串 `content`、非整数或布尔值 `maxCnt` 抛出 `TypeError`，负数 `maxCnt` 抛出 `ValueError`。
+
+`D_ChatId` 是 `str` 的不可变子类，而不是类型别名；`type(chat_ids[0]) is D_ChatId`。使用 `chat_id.value` 或 `str(chat_id)` 可取得原始字符串，也能直接传给 `getChatTitle()`、`getChatMessage()`、两个时间戳方法及 `exportToTex()`。保留字符串相等、哈希和 JSON 序列化行为，原来按字符串 ID 使用搜索结果的代码仍然可用。构造 `D_ChatId(value)` 时拒绝非字符串或空白 ID，不截断、去空格或限制为 UUID。`getChatList()`、`getChatListInTimeRange()` 原有的 `list[str]` 返回类型不变。
+
+默认查询所有未归档、已归档和状态不明的本地对话。标题使用与 `getChatTitle()` 相同的来源优先级，但索引完整存储标题，不受 40 字符的展示截断影响，也不索引人为添加的 `<TitleMissing>` 标记。正文只来自 `getChatMessage()` 同样可见性规则下的用户消息和最终答复，不索引思考、系统提示词、工具输出或原始 JSON 键；仅有标题、没有正文的对话也能命中。JSONL 优先、SQLite 投影回退与覆盖限制警告保持不变。
+
+**算法**：整个检索过程只使用 Python 标准库，不调用模型、嵌入服务、网络或外部检索程序。
+
+- Unicode NFKC 标准化与 `casefold()` 统一全角形式及大小写；保留数字和代码标识符中的文字部分。
+- 中日韩文字使用单字和相邻双字特征；英文等文字使用完整词及字符三元组。连续中文、部分短语和有共同字符三元组的英文拼写差异均可匹配，不需要中文分词模型；不声称能识别没有文字重叠的同义改写。
+- 倒排表只查命中查询特征的记录，相关性使用字段加权 BM25：稀有特征权重更高，词频有饱和、正文长度有归一化，避免很长的对话靠重复用词占据榜首。标题字段权重为正文的 4 倍，查询完整短语出现在标题时再提升分数；单字/模糊三元组通常低于完整词/双字的权重。
+- 仅对候选记录用有界 Top-K 选择，不排序全部历史，也不逐条对整段历史调用编辑距离或 `SequenceMatcher`。
+
+**缓存和复杂度**：首次查询需要读取历史并建立内存索引，之后请复用同一个 `reader`。索引保留词项、词频、字段长度及标题，不额外保留整份消息正文，不在 Codex 数据目录或其他位置落盘，销毁实例后释放。
+
+每次查询以文件列表、大小、纳秒级修改/状态时间及文件标识检查变更，覆盖 SQLite 主库、WAL/回滚日志、会话索引、活动/归档日志及已发现的外部日志。未变更时只做文件元数据检查，不重读 JSONL 或 SQLite 消息正文。新增对话只建立新对话的索引；已有 JSONL 追加或改写，只重新解析、分词并替换该对话的倒排项，不清空整份索引。单纯修改标题只重建标题特征，单纯修改时间不会重新分词正文。
+
+SQLite 回退正文使用按对话 ID 计算的 BLAKE2 内容指纹，覆盖相关消息行、顺序字段和 `thread_turns.final_agent_item_id`。共享投影库发生变化时，需要只读检查依赖该库的各对话指纹，但仅重新解析和分词指纹变化的对话；新增行、原地修改或删除一项不会重建其他对话。检查指纹不解析 JSON、不调用可见消息合并或分词；这仍可能读取该库中回退对话的原始行，不意味着数据库发生变化后完全不读取无关行。库文件指纹不变时复用缓存的对话指纹；已有可见 JSONL 的对话不计算未使用的投影正文指纹。读取期间来源发生变化时，下一次查询重试相关对话，不把旧正文永久绑定到新指纹。索引仍以对话为增量单位，并非仅对新增字节分词；变更时的元数据刷新和日志头发现也不是全文索引重建。
+
+令 `T` 为首次参与索引的文字量、`F` 为历史来源文件数、`U` 为不同查询特征数、`P` 为查询特征对应的倒排项数、`M` 为候选对话数、`K=maxCnt`：建索引约为 `O(T)`，索引空间与不同“特征—对话”组合数成正比；缓存后的查询约为 `O(F + |content| + U log U + P + M log K)`（查询特征排序保证评分顺序稳定；`K=1` 时选择为线性，`K>=M` 时最多对 `M` 个候选排序）。常见词可能命中大多数对话，但仍不扫描消息正文。文件指纹不是跨数据库/日志的原子快照，也不能发现刻意保留全部文件指纹的原地改写；需要完全重建时创建新的 `C_CodexInterface` 实例。读取警告仍可从 `diagnostics` 查看。
+
+`C_RoughMatchIndex` 可在没有 Codex 数据库时独立使用：
+
+```python
+from codex_history_interface import C_RoughMatchIndex
+
+index = C_RoughMatchIndex()
+index.updateDocument("chat-1", "截骨规划", ["用户的问题", "最终答复"])
+index.updateDocument("chat-2", "Markdown 表格", ["导出数学公式"])
+chat_ids = index.roughMatch("截骨", 5)
+index.updateDocument("chat-1", "新的标题")
+index.removeDocument("chat-2")
+```
+
+`contents=None`（省略第三个参数）保留已索引正文，传 `[]` 明确清空正文。纯检索核心的合成数据性能测试可通过以下命令复现；它同时测量稀有查询、常见查询、拼写差异和无命中查询，不包含历史 JSON 解析及文件元数据检查成本：
+
+```powershell
+python benchmarks/benchmark_rough_match.py --documents 10000 --repeats 25
+```
 
 ### 消息筛选
 
@@ -241,11 +320,11 @@ SQLite 正常读取 WAL 可能参与锁和共享内存协调；“只读”指�
 python -m unittest discover -s tests
 ```
 
-现有 343 项测试包括原 309 项历史读取、时间、CLI、TeX 和附件回归、27 项面向对象设计回归，以及 7 项文件行列号引用回归。功能回归测试不依赖 TeX 编译器。
+现有 479 项测试覆盖历史读取、时间、CLI、TeX、附件和面向对象设计，包括 46 项时间区间查询测试、61 项检索核心/历史集成测试、18 项严格差分索引测试、9 项 ID 类型测试及相应接口委托测试。差分测试统计正文读取、索引更新和删除次数，并检查无关对话的索引对象仍是原对象；覆盖新增对话、追加内容、共享投影库、原地编辑、删除、WAL 及读取/指纹计算期间的写入。ID 测试验证运行时类型、各层签名、公共导出、不可变性及直接查询/导出兼容。功能回归测试不依赖 TeX 编译器。
 
 ## 命令行（可选）
 
-列表、标题、消息和 TeX 导出均有命令行入口，不需要生成内联脚本；两个数值时间戳方法通过 Python 接口调用：
+列表、标题、消息和 TeX 导出均有命令行入口，不需要生成内联脚本；两个数值时间戳方法、时间区间查询及模糊检索通过 Python 接口调用：
 
 ```powershell
 codex-history list

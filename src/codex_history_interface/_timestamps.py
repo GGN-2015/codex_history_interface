@@ -2,11 +2,40 @@ from datetime import datetime, timezone
 import math
 
 from ._messages import visible_message
-from .ConcreteLocal.History.C_HistoryStore import C_HistoryStore as HistoryStore, Conversation
+from .ConcreteLocal.History.C_HistoryStore import ACTIVITY_TIME_FIELDS, C_HistoryStore as HistoryStore, Conversation
 
 
 TIME_FIELDS = ("timestamp_ms", "timestamp", "created_at_ms", "created_at")
 CREATE_FIELDS = ("created_at_ms", "created_at")
+
+
+def timestamp_range(timestamp1: float, timestamp2: float) -> tuple[float, float]:
+    bounds = []
+    for name, value in (("timestamp1", timestamp1), ("timestamp2", timestamp2)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be a finite Unix timestamp in seconds")
+        try:
+            parsed = float(value)
+        except OverflowError:
+            raise ValueError(f"{name} must be finite") from None
+        if not math.isfinite(parsed):
+            raise ValueError(f"{name} must be finite")
+        bounds.append(parsed)
+    if bounds[0] > bounds[1]:
+        raise ValueError("timestamp1 must be less than or equal to timestamp2")
+    return bounds[0], bounds[1]
+
+
+def activity_in_time_range(record: dict, start: float, end: float) -> bool:
+    payload = record.get("payload")
+    for values in (record, payload):
+        if not isinstance(values, dict):
+            continue
+        for offset in range(0, len(ACTIVITY_TIME_FIELDS), 2):
+            result = fields_timestamp(values, ACTIVITY_TIME_FIELDS[offset:offset + 2])
+            if result is not None and start <= result <= end:
+                return True
+    return False
 
 
 def timestamp_value(value: object, *, milliseconds: bool = False) -> float | None:

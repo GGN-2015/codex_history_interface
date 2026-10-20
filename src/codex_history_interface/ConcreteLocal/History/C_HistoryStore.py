@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import blake2b
 import json
 import math
 import os
@@ -18,6 +19,10 @@ UUID_PATTERN = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
 THREAD_COLUMNS = ("id", "name", "title", "archived", "rollout_path", "updated_at_ms", "updated_at", "created_at_ms", "created_at", "cwd")
 ITEM_TABLES = ("thread_items", "thread_realtime_items")
 HISTORY_TABLES = (*ITEM_TABLES, "thread_turns", "thread_history_projection_state")
+ACTIVITY_TIME_FIELDS = (
+    "timestamp_ms", "timestamp", "created_at_ms", "created_at", "updated_at_ms", "updated_at",
+    "started_at_ms", "started_at", "completed_at_ms", "completed_at", "archived_at_ms", "archived_at",
+)
 
 
 @dataclass
@@ -85,6 +90,7 @@ class C_HistoryStore:
             if not path.is_file():
                 raise HistoryUnavailableError(f"Explicit database not found: {path}")
         self.conversations: dict[str, Conversation] = {}
+        self._journal_paths: set[Path] = set()
         self.notices: list[str] = []
         self.loaded = False
         self.recognized = False
@@ -138,6 +144,30 @@ class C_HistoryStore:
                     candidates.extend(root.glob("*.sqlite"))
                     candidates.extend(root.glob("*.db"))
         return sorted(dict.fromkeys(path.resolve() for path in candidates), key=database_version, reverse=True)
+
+    def source_signature(self) -> dict[Path, tuple[int, int, int, int] | None]:
+        paths = {self.home / "session_index.jsonl"}
+        for database in self.database_paths():
+            paths.update((database, Path(str(database) + "-wal"), Path(str(database) + "-journal")))
+        for directory in ("sessions", "archived_sessions"):
+            root = self.home / directory
+            if root.is_dir():
+                try:
+                    paths.update(root.rglob("*.jsonl"))
+                except OSError as error:
+                    self.warn(f"Cannot enumerate journals under {root}: {error}")
+        paths.update(self._journal_paths)
+        return {path: self.file_signature(path) for path in paths}
+
+    def file_signature(self, path: Path) -> tuple[int, int, int, int] | None:
+        try:
+            status = path.stat()
+            return status.st_size, status.st_mtime_ns, status.st_ctime_ns, status.st_ino
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            self.warn(f"Cannot inspect history source {path}: {error}")
+            return None
 
     def refresh_metadata(self) -> None:
         for conversation in self.conversations.values():
@@ -206,6 +236,7 @@ class C_HistoryStore:
             if any(os.path.samefile(path, existing) for existing in conversation.paths if existing.exists()):
                 return
             conversation.paths[path] = path.stat().st_size
+            self._journal_paths.add(path)
         except OSError as error:
             self.warn(f"Cannot inspect journal {path}: {error}")
 
@@ -234,6 +265,7 @@ class C_HistoryStore:
 
     def refresh(self) -> None:
         self.conversations.clear()
+        self._journal_paths.clear()
         self.recognized = False
         self.refresh_metadata()
         for directory in ("sessions", "archived_sessions"):
@@ -287,6 +319,65 @@ class C_HistoryStore:
             if isinstance(value, str) and value.strip():
                 return TITLE_MISSING + value
         return TITLE_MISSING
+
+    def activity_records(self) -> Iterator[tuple[str, dict]]:
+        index = self.home / "session_index.jsonl"
+        if index.is_file():
+            for _, entry in self.records(index):
+                identity = entry.get("id") or entry.get("thread_id")
+                if isinstance(identity, str) and identity:
+                    yield identity, entry
+        for path in self.database_paths():
+            try:
+                with read_database(path) as connection:
+                    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    for table in ("threads", *HISTORY_TABLES):
+                        if table not in tables:
+                            continue
+                        available = columns(connection, table)
+                        identity_field = "id" if table == "threads" else "thread_id"
+                        selected = [name for name in (*ACTIVITY_TIME_FIELDS, "item_json") if name in available]
+                        if identity_field not in available or not selected:
+                            continue
+                        fields = ", ".join(f'"{name}"' for name in (identity_field, *selected))
+                        for row in connection.execute(f'SELECT {fields} FROM "{table}"'):
+                            record = dict(row)
+                            identity = record.pop(identity_field)
+                            if not isinstance(identity, str) or not identity:
+                                continue
+                            if "item_json" in record:
+                                try:
+                                    record["payload"] = json.loads(record.pop("item_json"))
+                                except (ValueError, TypeError, UnicodeError):
+                                    self.warn(f"Invalid activity item for {identity} in {path}#{table}")
+                            yield identity, record
+            except (OSError, sqlite3.Error) as error:
+                self.warn(f"Cannot read activity timestamps from {path}: {error}")
+
+    def projection_signature(self, identity: str, path: Path, table: str) -> bytes | None:
+        """Fingerprint one chat's projected rows and final-answer selectors without parsing JSON."""
+        try:
+            with read_database(path) as connection:
+                connection.execute("BEGIN")
+                available = columns(connection, table)
+                selected = [name for name in ("item_json", "item_id", "turn_id", "timestamp_ms", "timestamp", "created_at_ms", "created_at", "rollout_ordinal") if name in available]
+                order = [name for name in ("rollout_ordinal", "created_at_ms", "turn_id", "item_id") if name in available]
+                query = 'SELECT ' + ", ".join(f'"{name}"' for name in selected) + f' FROM "{table}" WHERE thread_id = ?'
+                if order:
+                    query += " ORDER BY " + ", ".join(f'"{name}"' for name in order)
+                digest = blake2b(digest_size=20)
+                digest.update(repr(tuple(selected)).encode("ascii") + b"\0")
+                for row in connection.execute(query, (identity,)):
+                    digest.update(repr(tuple(row)).encode("utf-8", "surrogatepass") + b"\0")
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "thread_turns" in tables and {"thread_id", "turn_id", "final_agent_item_id"}.issubset(columns(connection, "thread_turns")):
+                    digest.update(b"thread_turns\0")
+                    for row in connection.execute("SELECT turn_id, final_agent_item_id FROM thread_turns WHERE thread_id = ? ORDER BY turn_id, final_agent_item_id", (identity,)):
+                        digest.update(repr(tuple(row)).encode("utf-8", "surrogatepass") + b"\0")
+                return digest.digest()
+        except (OSError, sqlite3.Error) as error:
+            self.warn(f"Cannot fingerprint projected messages for {identity}: {error}")
+            return None
 
     def projection_records(self, conversation: Conversation) -> Iterator[tuple[str, dict]]:
         for path, table in conversation.projections:

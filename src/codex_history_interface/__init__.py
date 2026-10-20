@@ -2,6 +2,7 @@ from . import Abstract
 from . import ConcreteLocal
 from .Abstract import (
     D_ChatExport,
+    D_ChatId,
     D_ChatMessage,
     I_CodexInterface,
     I_HistoryRepository,
@@ -14,6 +15,7 @@ from .ConcreteLocal import (
     C_HistoryRepository,
     C_HistoryStore,
     C_MarkdownLatexRenderer,
+    C_RoughMatchIndex,
     C_TexDocumentRenderer,
     C_TexExporter,
 )
@@ -36,11 +38,13 @@ __all__ = [
     "C_CodexInterface",
     "C_HistoryRepository",
     "C_HistoryStore",
+    "C_RoughMatchIndex",
     "C_TexExporter",
     "C_TexDocumentRenderer",
     "C_MarkdownLatexRenderer",
     "C_AssetBundle",
     "D_ChatExport",
+    "D_ChatId",
     "D_ChatMessage",
     "CodexHistoryError",
     "ChatNotFoundError",

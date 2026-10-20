@@ -7,7 +7,7 @@ from .Export import (
     C_TexDocumentRenderer,
     C_TexExporter,
 )
-from .History import C_HistoryRepository, C_HistoryStore
+from .History import C_HistoryRepository, C_HistoryStore, C_RoughMatchIndex
 
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "C_CodexInterface",
     "C_HistoryRepository",
     "C_HistoryStore",
+    "C_RoughMatchIndex",
     "C_TexExporter",
     "C_TexDocumentRenderer",
     "C_MarkdownLatexRenderer",

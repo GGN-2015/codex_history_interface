@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from os import PathLike
 from pathlib import Path
 
+from .History.D_ChatId import D_ChatId
 from .History.D_ChatMessage import D_ChatMessage
 
 
@@ -12,6 +13,20 @@ class I_CodexInterface(ABC):
     @abstractmethod
     def getChatList(self) -> list[str]:
         """Return exact conversation IDs, including archived conversations."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def getChatListInTimeRange(self, timestamp1: float, timestamp2: float) -> list[str]:
+        """Return IDs created or modified in the inclusive Unix-second interval, including archived chats.
+
+        Bounds must be finite numbers with timestamp1 <= timestamp2. Match any
+        persisted activity timestamp, not just the latest modification time.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def roughMatch(self, content: str, maxCnt: int) -> list[D_ChatId]:
+        """Return up to maxCnt typed IDs ranked by non-AI fuzzy title/visible-message relevance, including archived chats."""
         raise NotImplementedError
 
     @abstractmethod

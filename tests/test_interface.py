@@ -90,7 +90,7 @@ class InterfaceTests(unittest.TestCase):
     def test_abstract_interface_cannot_be_instantiated(self):
         with self.assertRaises(TypeError):
             I_CodexInterface()
-        self.assertEqual(I_CodexInterface.__abstractmethods__, {"getChatList", "getChatTitle", "getChatMessage", "getLastMessageTimeStamp", "getCreateTimeStamp", "exportToTex"})
+        self.assertEqual(I_CodexInterface.__abstractmethods__, {"getChatList", "getChatListInTimeRange", "roughMatch", "getChatTitle", "getChatMessage", "getLastMessageTimeStamp", "getCreateTimeStamp", "exportToTex"})
 
     def test_concrete_reader_implements_requested_interface(self):
         self.assertIsInstance(self.reader(), I_CodexInterface)

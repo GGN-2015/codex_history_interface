@@ -3,6 +3,7 @@ from pathlib import Path
 
 from ...errors import HistoryReadWarning
 from .D_ChatExport import D_ChatExport
+from .D_ChatId import D_ChatId
 from .D_ChatMessage import D_ChatMessage
 
 
@@ -22,6 +23,16 @@ class I_HistoryRepository(ABC):
     @abstractmethod
     def getChatList(self) -> list[str]:
         """Return full IDs for active and archived conversations."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def getChatListInTimeRange(self, timestamp1: float, timestamp2: float) -> list[str]:
+        """Return IDs created or modified in the inclusive, finite Unix-second interval, in list order."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def roughMatch(self, content: str, maxCnt: int) -> list[D_ChatId]:
+        """Rank titles and visible messages without AI, returning up to maxCnt typed active/archived IDs."""
         raise NotImplementedError
 
     @abstractmethod

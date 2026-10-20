@@ -15,9 +15,11 @@ from codex_history_interface import (
     C_HistoryRepository,
     C_HistoryStore,
     C_MarkdownLatexRenderer,
+    C_RoughMatchIndex,
     C_TexDocumentRenderer,
     C_TexExporter,
     D_ChatExport,
+    D_ChatId,
     D_ChatMessage,
     I_CodexInterface,
     I_HistoryRepository,
@@ -50,6 +52,13 @@ class C_MemoryHistoryRepository(I_HistoryRepository):
 
     def getChatList(self):
         return [CHAT_ID]
+
+    def getChatListInTimeRange(self, timestamp1, timestamp2):
+        return [CHAT_ID] if any(timestamp1 <= value <= timestamp2 for value in (START + 0.683, START + 20.25)) else []
+
+    def roughMatch(self, content, maxCnt):
+        text = self.getChatTitle(CHAT_ID) + " ".join(message["content"] for message in self.messages)
+        return [D_ChatId(CHAT_ID)] if maxCnt > 0 and content in text else []
 
     def getChatTitle(self, chat_id):
         return "内存对话"
@@ -96,10 +105,12 @@ class ObjectExportTests(unittest.TestCase):
             "Abstract.History.I_HistoryRepository": I_HistoryRepository,
             "Abstract.History.D_ChatMessage": D_ChatMessage,
             "Abstract.History.D_ChatExport": D_ChatExport,
+            "Abstract.History.D_ChatId": D_ChatId,
             "Abstract.Export.I_TexExporter": I_TexExporter,
             "ConcreteLocal.C_CodexInterface": C_CodexInterface,
             "ConcreteLocal.History.C_HistoryRepository": C_HistoryRepository,
             "ConcreteLocal.History.C_HistoryStore": C_HistoryStore,
+            "ConcreteLocal.History.C_RoughMatchIndex": C_RoughMatchIndex,
             "ConcreteLocal.Export.C_TexExporter": C_TexExporter,
             "ConcreteLocal.Export.C_TexDocumentRenderer": C_TexDocumentRenderer,
             "ConcreteLocal.Export.C_MarkdownLatexRenderer": C_MarkdownLatexRenderer,
@@ -123,6 +134,7 @@ class ObjectExportTests(unittest.TestCase):
         self.assertIs(Abstract.I_HistoryRepository, Abstract.History.I_HistoryRepository)
         self.assertIs(Abstract.I_TexExporter, Abstract.Export.I_TexExporter)
         self.assertIs(ConcreteLocal.C_HistoryRepository, ConcreteLocal.History.C_HistoryRepository)
+        self.assertIs(ConcreteLocal.C_RoughMatchIndex, ConcreteLocal.History.C_RoughMatchIndex)
         self.assertIs(ConcreteLocal.C_TexExporter, ConcreteLocal.Export.C_TexExporter)
 
     def test_legacy_imports_keep_type_identity(self):
@@ -144,9 +156,9 @@ class ObjectExportTests(unittest.TestCase):
             with self.subTest(interface=interface.__name__), self.assertRaises(TypeError):
                 interface()
 
-    def test_original_interface_keeps_exactly_six_abstract_methods(self):
+    def test_interface_defines_eight_abstract_methods(self):
         self.assertEqual(I_CodexInterface.__abstractmethods__, {
-            "getChatList", "getChatTitle", "getChatMessage", "getLastMessageTimeStamp",
+            "getChatList", "getChatListInTimeRange", "roughMatch", "getChatTitle", "getChatMessage", "getLastMessageTimeStamp",
             "getCreateTimeStamp", "exportToTex",
         })
 
@@ -172,6 +184,21 @@ class CompositionTests(unittest.TestCase):
         for name in ("getChatTitle", "getChatMessage", "getLastMessageTimeStamp", "getCreateTimeStamp"):
             with self.subTest(method=name):
                 self.assertEqual(getattr(reader, name)(CHAT_ID), getattr(self.repository, name)(CHAT_ID))
+
+    def test_facade_delegates_time_range_arguments_to_injected_repository(self):
+        reader = C_CodexInterface(repository=self.repository)
+        with patch.object(self.repository, "getChatListInTimeRange", wraps=self.repository.getChatListInTimeRange) as query:
+            self.assertEqual(reader.getChatListInTimeRange(START, START + 1), [CHAT_ID])
+            query.assert_called_once_with(START, START + 1)
+        self.assertEqual(reader.getChatListInTimeRange(START + 2, START + 3), [])
+        self.assertFalse(self.repository.codex_home.exists())
+
+    def test_facade_delegates_rough_match_arguments_without_local_access(self):
+        reader = C_CodexInterface(repository=self.repository)
+        with patch.object(self.repository, "roughMatch", wraps=self.repository.roughMatch) as query:
+            self.assertEqual(reader.roughMatch("问题", 2), [CHAT_ID])
+            query.assert_called_once_with("问题", 2)
+        self.assertFalse(self.repository.codex_home.exists())
 
     def test_injected_falsey_exporter_receives_same_repository_and_options(self):
         exporter = C_RecordingTexExporter()
@@ -316,6 +343,7 @@ class LocalRepositoryTests(ExportFixture, unittest.TestCase):
     def test_standalone_repository_matches_the_facade_read_methods(self):
         repository = C_HistoryRepository(self.home)
         self.assertEqual(repository.getChatList(), self.reader.getChatList())
+        self.assertEqual(repository.getChatListInTimeRange(START, START + 1), self.reader.getChatListInTimeRange(START, START + 1))
         for name in ("getChatTitle", "getChatMessage", "getCreateTimeStamp", "getLastMessageTimeStamp"):
             with self.subTest(method=name):
                 self.assertEqual(getattr(repository, name)(CHAT_ID), getattr(self.reader, name)(CHAT_ID))
