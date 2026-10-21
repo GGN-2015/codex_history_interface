@@ -25,6 +25,7 @@ class EquationReferences:
     def __init__(self) -> None:
         self.labels: dict[str, list[EquationLabel]] = {}
         self.references: list[EquationReference] = []
+        self.unresolved: dict[str, list[str]] = {}
         self.order = 0
         self.label_count = 0
 
@@ -49,6 +50,7 @@ class EquationReferences:
 
     def resolve(self, source: str, *, escape: Callable[[str], str], warn: Callable[[str], None]) -> str:
         replacements = {}
+        self.unresolved = {}
         for reference in self.references:
             candidates = self.labels.get(reference.name, [])
             local = [label for label in candidates if label.message == reference.message]
@@ -58,6 +60,7 @@ class EquationReferences:
                 target = (preceding[-1] if preceding else preferred[0]).target
                 replacement = "\\" + reference.command + "{" + target + "}"
             else:
+                self.unresolved.setdefault(reference.name, []).append(reference.context)
                 replacement = r"\text{" + escape("[未解析的公式引用：" + reference.name + "]") + "}"
                 warn(reference.context + ": equation reference '" + reference.name + "' has no exported target; its identifier was preserved")
             replacements[reference.placeholder] = replacement

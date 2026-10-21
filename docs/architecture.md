@@ -24,6 +24,7 @@ codex_history_interface/
 │   │   ├── C_HistoryStore.py
 │   │   ├── C_RoughMatchIndex.py
 │   │   ├── C_PersistentRoughMatchIndex.py
+│   │   ├── C_IndexFileLock.py
 │   │   └── C_SearchConfig.py
 │   └── Export/
 │       ├── C_TexExporter.py
@@ -40,7 +41,8 @@ codex_history_interface/
 | `I_HistoryRepository` / `C_HistoryRepository` | 只读查询 ID、展示标题、可见消息与时间，构造带附件来源和保护路径的 `D_ChatExport` 快照 |
 | `C_HistoryStore` | 定位数据目录、只读访问 SQLite、索引、活动/归档 JSONL 与投影，并汇集诊断 |
 | `C_RoughMatchIndex` | 可独立复用的内存倒排索引，增量维护标题/正文词频，以字符 n-gram 和字段加权 BM25 返回相关性最高的 ID；只依赖 Python 标准库 |
-| `C_PersistentRoughMatchIndex` | 默认历史检索使用的 SQLite 子类；倒排项与差分指纹持久化，事务提交及跨进程复用，仅加载命中词项 |
+| `C_PersistentRoughMatchIndex` | 默认历史检索使用的 SQLite 子类；倒排项与指纹原子提交，唯一标识/代次检测跨进程变更，只加载命中词项；恢复与事务共用跨进程锁 |
+| `C_IndexFileLock` | 内部锁适配器；以稳定的旁路文件承载 Windows/POSIX 操作系统锁，覆盖打开、恢复与事务全过程；超时明确报错，不删除锁文件 |
 | `I_SearchConfig` / `C_SearchConfig` | 声明配置字段、提供实例默认值；通过传统 `get...()` 方法读取目录、版本、超时、分词模式和 CLI 默认数量，不使用 `@property` |
 | `C_CommandLine` | 构建命令解析器，执行读取、持久化检索及导出；静态 `main()` 作为 console script 与模块入口，不定义模块级业务函数 |
 | `D_ChatId` | 不可变的对话 ID 值类型；`roughMatch()` 返回该类型，兼容既有字符串 ID 接口及 JSON 序列化，通过 `.value` 读取原始字符串 |

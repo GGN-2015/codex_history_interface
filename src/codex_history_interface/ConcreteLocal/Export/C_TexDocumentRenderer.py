@@ -49,7 +49,8 @@ class C_TexDocumentRenderer:
                 if not turns:
                     turns.append({"user": None, "timestamp": None, "assistant": []})
                 turns[-1]["assistant"].append(message["content"])
-        escaped_title = tex_escape(renderer.safe_text(title, context="Title"))
+        title = renderer.safe_text(title, context="Title")
+        escaped_title = tex_escape(title)
         header_title = title[:40] + "..." if len(title) > 40 else title
         escaped_header = escaped_title if header_title == title else tex_escape(renderer.safe_text(header_title, context="Title"))
         pieces = [self.preamble, "\\newcommand{\\CodexConversationTitle}{" + escaped_header + "}\n\\title{" + escaped_title + "}\n\\author{}\n\\date{}\n\\begin{document}\n\\maketitle\n"]
@@ -74,5 +75,4 @@ class C_TexDocumentRenderer:
             pieces.extend(renderer.render(answer, context=f"Round {number} assistant reply {reply}") for reply, answer in enumerate(turn["assistant"], 1))
             if not turn["assistant"]:
                 pieces.append("（本轮尚无最终答复）\n")
-        pieces.append("\\end{document}\n")
-        return renderer.finish("".join(pieces))
+        return renderer.finish("".join(pieces), include_report=True) + "\\end{document}\n"

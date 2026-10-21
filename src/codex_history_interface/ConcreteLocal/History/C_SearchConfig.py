@@ -13,6 +13,9 @@ class C_SearchConfig(I_SearchConfig):
         self._index_directory = Path(directory).expanduser().resolve()
         self._schema_version = 1
         self._sqlite_timeout = 30.0
+        self._sqlite_write_cache_kib = super().getSqliteWriteCacheKiB()
+        self._lock_timeout = 30.0
+        self._lock_poll_interval = 0.05
         self._cjk_ranges = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\U00020000-\U0003134f"
         self._token_pattern = re.compile(f"[{self._cjk_ranges}]+|[^\\W_{self._cjk_ranges}]+")
         self._cjk_pattern = re.compile(f"[{self._cjk_ranges}]")
@@ -30,6 +33,15 @@ class C_SearchConfig(I_SearchConfig):
 
     def getSqliteTimeout(self) -> float:
         return self._sqlite_timeout
+
+    def getSqliteWriteCacheKiB(self) -> int:
+        return self._sqlite_write_cache_kib
+
+    def getLockTimeout(self) -> float:
+        return self._lock_timeout
+
+    def getLockPollInterval(self) -> float:
+        return self._lock_poll_interval
 
     def getCjkRanges(self) -> str:
         return self._cjk_ranges

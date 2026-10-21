@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from codex_history_interface import C_CodexInterface, C_CommandLine, C_SearchConfig, I_SearchConfig
 from codex_history_interface.ConcreteLocal.History import C_PersistentRoughMatchIndex, C_RoughMatchIndex
+from codex_history_interface.ConcreteLocal.History.C_IndexFileLock import C_IndexFileLock
 from test_export_tex import CHAT_ID, ExportFixture
 
 
@@ -33,12 +34,25 @@ class SearchConfigTests(unittest.TestCase):
         self.assertEqual(config.getIndexDirectory(), self.root / "indexes")
         self.assertEqual(config.getSchemaVersion(), 1)
         self.assertEqual(config.getSqliteTimeout(), 30.0)
+        self.assertEqual(config.getSqliteWriteCacheKiB(), 65536)
+        self.assertEqual(config.getLockTimeout(), 30.0)
+        self.assertEqual(config.getLockPollInterval(), 0.05)
         self.assertEqual(config.getDefaultMaxCount(), 10)
         self.assertTrue(config.getTokenPattern().search("中文 English"))
         self.assertTrue(config.getCjkPattern().match("中"))
         self.assertIsInstance(config.getCjkRanges(), str)
         self.assertFalse(any(isinstance(member, property) for member in vars(I_SearchConfig).values()))
         self.assertFalse(any(isinstance(member, property) for member in vars(C_SearchConfig).values()))
+
+    def test_legacy_configuration_inherits_the_write_cache_default(self):
+        config = C_SearchConfig(self.root / "indexes")
+        legacy_type = type("LegacySearchConfig", (I_SearchConfig,), {
+            name: getattr(C_SearchConfig, name) for name in I_SearchConfig.__abstractmethods__
+        })
+        legacy = legacy_type()
+        legacy.__dict__.update(vars(config))
+        self.assertEqual(legacy.getIndexDirectory(), config.getIndexDirectory())
+        self.assertEqual(legacy.getSqliteWriteCacheKiB(), 65536)
 
     def test_default_index_uses_the_actual_user_home_not_a_windows_template(self):
         home = self.root / "relocated profiles" / "测试用户"
@@ -88,7 +102,7 @@ class SearchConfigTests(unittest.TestCase):
             self.assertEqual(reader.codex_home, data)
 
     def test_new_components_use_classes_without_module_constants_or_functions(self):
-        for component in (I_SearchConfig, C_SearchConfig, C_PersistentRoughMatchIndex, C_RoughMatchIndex, C_CommandLine):
+        for component in (I_SearchConfig, C_SearchConfig, C_PersistentRoughMatchIndex, C_RoughMatchIndex, C_IndexFileLock, C_CommandLine):
             with self.subTest(component=component.__name__):
                 tree = ast.parse(Path(inspect.getfile(component)).read_text(encoding="utf-8"))
                 self.assertFalse(any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign, ast.AnnAssign)) for node in tree.body))

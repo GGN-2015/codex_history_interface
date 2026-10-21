@@ -56,6 +56,16 @@ if chat_ids:
 
 输出包含标题、时间、目录、每轮提问与最终答复，并复制可用附件；包本身不编译 PDF。
 
+安装好 XeLaTeX 及所需宏包后，在导出目录执行两遍编译，使目录、页码和引用完整生成：
+
+```powershell
+cd "$HOME/codex-exports"
+xelatex -interaction=nonstopmode -halt-on-error conversation.tex
+xelatex -interaction=nonstopmode -halt-on-error conversation.tex
+```
+
+若日志仍提示重跑，请继续编译直至目录和引用稳定。公式告警会标明消息内行号及原文片段；未解析的公式引用还会在文末汇总。更多生成规则见 [TeX 导出](docs/tex-export.md)。
+
 > **WARNING：不要单独改名、删除或移动导出的 `asset-*` 附件。** 请将 `.tex`、附件和自行编译的 PDF 整套放在同一目录，避免破坏相对链接。
 
 ### 4. 使用 CLI

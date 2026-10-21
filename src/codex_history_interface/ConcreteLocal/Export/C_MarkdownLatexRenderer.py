@@ -8,6 +8,7 @@ from markdown_it.rules_block import StateBlock
 from markdown_it.rules_inline import StateInline
 from markdown_it.token import Token
 from mdit_py_plugins.dollarmath import dollarmath_plugin
+from mdit_py_plugins.dollarmath.index import math_inline_dollar
 
 from .C_AssetBundle import C_AssetBundle, NATIVE_IMAGES, remote_reference
 from ..._tex_math import prepare_math
@@ -21,6 +22,8 @@ TEXT_ESCAPES = {
     "^": r"\textasciicircum{}", "~": r"\textasciitilde{}",
 }
 URL_ESCAPES = {character: TEXT_ESCAPES[character] for character in "#$%&_"}
+CITATION_MARKERS = re.compile(r"\ue200[ \t]*cite[ \t]*\ue202([^\ue200\ue201\r\n]+)\ue201")
+LONG_TEXT_RUN = re.compile(r"[^\s\u1100-\u11ff\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff01-\uffdc\U00020000-\U0003ffff]{24,}")
 USER_MESSAGE_LABELS = {
     "Files mentioned by the user": "用户提及的文件",
     "My request for Codex": "用户请求",
@@ -111,19 +114,50 @@ def tex_escape(text: str, *, code: bool = False) -> str:
 
 
 def wrappable_text(text: str, *, code: bool = False) -> str:
-    pieces = re.split(r"(\S{24,})", text)
-    return "".join(
-        r"\allowbreak{}".join(tex_escape(character, code=code) for character in piece)
-        if len(piece) >= 24 and not any(character.isspace() for character in piece)
-        else tex_escape(piece, code=code)
-        for piece in pieces
-    )
+    pieces = []
+    beginning = 0
+    for match in LONG_TEXT_RUN.finditer(text):
+        pieces.append(tex_escape(text[beginning:match.start()], code=code))
+        pieces.append(r"\allowbreak{}".join(tex_escape(character, code=code) for character in match.group()))
+        beginning = match.end()
+    pieces.append(tex_escape(text[beginning:], code=code))
+    return "".join(pieces)
 
 
-def literal_math_token(state: StateBlock | StateInline, content: str, reason: str, *, display: bool) -> None:
+def literal_math_token(state: StateBlock | StateInline, content: str, reason: str, *, display: bool) -> Token:
     token = state.push("codex_math_literal", "", 0)
     token.content = content
     token.meta.update(reason=reason, display=display)
+    return token
+
+
+def located_inline(rule: Callable[[StateInline, bool], bool]) -> Callable[[StateInline, bool], bool]:
+    def parse(state: StateInline, silent: bool) -> bool:
+        beginning = state.pos
+        token_count = len(state.tokens)
+        matched = rule(state, silent)
+        if matched and not silent:
+            first_line = state.env.get("codex_source_line", 0) + state.src[:beginning].count("\n")
+            last_line = first_line + state.src[beginning:state.pos].count("\n") + 1
+            for token in state.tokens[token_count:]:
+                token.map = [first_line, last_line]
+        return matched
+
+    return parse
+
+
+def inline_with_locations(state) -> None:
+    for token in state.tokens:
+        if token.type != "inline":
+            continue
+        previous = state.env.get("codex_source_line", 0)
+        state.env["codex_source_line"] = token.map[0] if token.map else 0
+        if token.children is None:
+            token.children = []
+        try:
+            state.md.inline.parse(token.content, state.md, state.env, token.children)
+        finally:
+            state.env["codex_source_line"] = previous
 
 
 def delimiter_block(state: StateBlock, start_line: int, end_line: int, silent: bool, opening: str, closing: str) -> bool:
@@ -155,13 +189,14 @@ def delimiter_block(state: StateBlock, start_line: int, end_line: int, silent: b
                 token = state.push("inline", "", 0)
                 token.content = suffix.lstrip()
                 token.children = []
+                token.map = [line_number, line_number + 1]
                 state.push("paragraph_close", "p", -1)
             state.line = line_number + 1
             return True
         lines.append(line)
     boundary = next((number for number in range(start_line + 1, end_line) if not state.src[state.bMarks[number]:state.eMarks[number]].strip()), end_line)
     content = "\n".join(lines[:boundary - start_line])
-    literal_math_token(state, content, "Unclosed mathematical delimiter: " + opening, display=True)
+    literal_math_token(state, content, "Unclosed mathematical delimiter: " + opening, display=True).map = [start_line, boundary]
     state.line = boundary
     return True
 
@@ -243,18 +278,20 @@ def environment_block(state: StateBlock, start_line: int, end_line: int, silent:
     content = "\n".join(state.src[state.bMarks[number] + state.tShift[number]:state.eMarks[number]] for number in range(start_line, end_line))
     ending, reason = environment_end(content)
     if reason:
-        literal_math_token(state, content[:ending], reason, display=True)
+        token = literal_math_token(state, content[:ending], reason, display=True)
     else:
         token = state.push("math_block", "math", 0)
         token.content = content[:ending]
         token.block = True
     consumed = content[:ending].count("\n") + 1
+    token.map = [start_line, start_line + consumed]
     suffix = content[ending:].split("\n", 1)[0]
     if suffix.strip():
         state.push("paragraph_open", "p", 1)
         token = state.push("inline", "", 0)
         token.content = suffix.lstrip()
         token.children = []
+        token.map = [start_line + consumed - 1, start_line + consumed]
         state.push("paragraph_close", "p", -1)
     state.line = start_line + consumed
     return True
@@ -312,10 +349,13 @@ def styled_inline(state: StateInline, silent: bool) -> bool:
                 state.pos = beginning + match.end() + ending.end()
                 return True
             state.env["codex_style_depth"] = nesting + 1
+            source_line = state.env.get("codex_source_line", 0)
+            state.env["codex_source_line"] = source_line + state.src[:beginning + match.end()].count("\n")
             try:
                 state.md.inline.parse(content, state.md, state.env, token.children)
             finally:
                 state.env["codex_style_depth"] = nesting
+                state.env["codex_source_line"] = source_line
         state.pos = beginning + match.end() + ending.end()
         return True
     return False
@@ -373,12 +413,14 @@ class C_MarkdownLatexRenderer:
         self.parser.block.ruler.before("fence", "bracket_display_block", bracket_display_block, {"alt": ["paragraph", "reference", "blockquote", "list"]})
         self.parser.block.ruler.before("fence", "dollar_display_block", dollar_display_block, {"alt": ["paragraph", "reference", "blockquote", "list"]})
         self.parser.block.ruler.before("fence", "environment_block", environment_block, {"alt": ["paragraph", "reference", "blockquote", "list"]})
-        self.parser.inline.ruler.before("escape", "bracket_display_inline", bracket_display_inline)
-        self.parser.inline.ruler.before("escape", "environment_inline", environment_inline)
-        self.parser.inline.ruler.before("math_inline", "double_dollar_inline", double_dollar_inline)
+        self.parser.inline.ruler.before("escape", "bracket_display_inline", located_inline(bracket_display_inline))
+        self.parser.inline.ruler.before("escape", "environment_inline", located_inline(environment_inline))
+        self.parser.inline.ruler.before("math_inline", "double_dollar_inline", located_inline(double_dollar_inline))
+        self.parser.inline.ruler.at("math_inline", located_inline(math_inline_dollar(allow_space=False, allow_digits=False, allow_double=True)))
         self.parser.inline.ruler.before("escape", "styled_inline", styled_inline)
         self.parser.core.ruler.before("block", "protect_table_pipes", protect_table_pipes)
         self.parser.core.ruler.before("inline", "restore_table_pipes", restore_table_pipes)
+        self.parser.core.ruler.at("inline", inline_with_locations)
 
     def warn(self, text: str) -> None:
         if text in self.notices:
@@ -390,6 +432,7 @@ class C_MarkdownLatexRenderer:
             warnings.warn(text, TexExportWarning, stacklevel=3)
 
     def safe_text(self, text: str, *, context: str | None = None) -> str:
+        text = CITATION_MARKERS.sub(lambda match: "[cite " + "; ".join(part.strip() for part in match.group(1).split("\ue202") if part.strip()) + "]", text)
         invalid = {character for character in text if (ord(character) < 32 and character not in "\n\r\t") or 0xD800 <= ord(character) <= 0xDFFF}
         if invalid:
             markers = {character: "[U+" + format(ord(character), "04X") + "]" for character in invalid}
@@ -397,21 +440,30 @@ class C_MarkdownLatexRenderer:
             return "".join(markers.get(character, character) for character in text)
         return text
 
-    def literal_math(self, original: str, reason: str, *, display: bool) -> str:
+    def formula_context(self, source_lines: list[int] | None) -> str:
+        context = self.context + f", formula {self.formula_number}"
+        if source_lines:
+            first, last = source_lines[0] + 1, source_lines[1]
+            context += f", message line {first}" if first == last else f", message lines {first}-{last}"
+        return context
+
+    def literal_math(self, original: str, reason: str, *, display: bool, source_lines: list[int] | None = None) -> str:
         self.formula_number += 1
-        self.warn(f"{self.context}, formula {self.formula_number}: {reason}; original TeX was preserved literally, not executed or guessed")
+        excerpt = " ".join(original.split())
+        excerpt = excerpt[:117] + "..." if len(excerpt) > 120 else excerpt
+        self.warn(f"{self.formula_context(source_lines)}: {reason}; near {excerpt!r}; original TeX was preserved literally, not executed or guessed")
         if display:
             return self.code_block(original, "公式原文（未作数学排版）")
         return "〔公式原文〕" + r"\texttt{" + wrappable_text(original, code=True) + "}"
 
-    def math(self, text: str, *, display: bool, original: str | None = None) -> str:
+    def math(self, text: str, *, display: bool, original: str | None = None, source_lines: list[int] | None = None) -> str:
         try:
             source = math_source(text)
         except TexExportError as error:
             raw = original if original is not None else text
-            return self.literal_math(raw, str(error).removeprefix("Invalid mathematical content: "), display=display)
+            return self.literal_math(raw, str(error).removeprefix("Invalid mathematical content: "), display=display, source_lines=source_lines)
         self.formula_number += 1
-        source = self.references.register(source, self.message_number, self.context + f", formula {self.formula_number}")
+        source = self.references.register(source, self.message_number, self.formula_context(source_lines))
         environment = re.fullmatch(r"\s*\\begin\s*\{([A-Za-z*]+)\}([\s\S]*)\\end\s*\{\1\}\s*", source)
         if environment:
             name, body = environment.groups()
@@ -433,8 +485,16 @@ class C_MarkdownLatexRenderer:
         closing = {"$": "$", "$$": "$$", r"\(": r"\)", r"\[": r"\]"}.get(opening, r"\]")
         return opening + token.content + closing
 
-    def finish(self, source: str) -> str:
-        return self.references.resolve(source, escape=tex_escape, warn=self.warn)
+    def finish(self, source: str, *, include_report: bool = False) -> str:
+        source = self.references.resolve(source, escape=tex_escape, warn=self.warn)
+        if not include_report or not self.references.unresolved:
+            return source
+        pieces = [source, "\\section*{未解析的公式引用清单}\n\\begin{itemize}\n"]
+        for name, contexts in self.references.unresolved.items():
+            pieces.append(r"\item \texttt{" + wrappable_text(name, code=True) + "}（出现 " + str(len(contexts)) + " 次）\\par\n")
+            pieces.append("\\newline{}\n".join(tex_escape(context) for context in dict.fromkeys(contexts)) + "\\par\n")
+        pieces.append("\\end{itemize}\n")
+        return "".join(pieces)
 
     def link(self, reference: str, label: str, *, image: bool = False, linked: bool = False) -> str:
         reference = reference.strip()
@@ -495,11 +555,11 @@ class C_MarkdownLatexRenderer:
                         label = self.link(content, label)
                 pieces.append(label)
             elif kind == "math_inline":
-                pieces.append(self.math(token.content, display=False, original=self.original_math(token)))
+                pieces.append(self.math(token.content, display=False, original=self.original_math(token), source_lines=token.map))
             elif kind == "math_inline_double":
-                pieces.append(self.math(token.content, display=not (compact or styles or links), original=self.original_math(token)))
+                pieces.append(self.math(token.content, display=not (compact or styles or links), original=self.original_math(token), source_lines=token.map))
             elif kind == "codex_math_literal":
-                pieces.append(self.literal_math(token.content, token.meta["reason"], display=bool(token.meta["display"]) and not (compact or styles or links)))
+                pieces.append(self.literal_math(token.content, token.meta["reason"], display=bool(token.meta["display"]) and not (compact or styles or links), source_lines=token.map))
             elif kind == "codex_literal":
                 self.warn(self.context + ": " + token.meta["reason"])
                 pieces.append(r"\texttt{" + wrappable_text(token.content, code=True) + "}")
@@ -605,9 +665,9 @@ class C_MarkdownLatexRenderer:
             elif kind in ("fence", "code_block"):
                 pieces.append(self.code_block(token.content, token.info.strip().split(" ", 1)[0]))
             elif kind in ("math_block", "math_block_label", "math_block_eqno", "amsmath"):
-                pieces.append(self.math(token.content, display=True, original=self.original_math(token)))
+                pieces.append(self.math(token.content, display=True, original=self.original_math(token), source_lines=token.map))
             elif kind == "codex_math_literal":
-                pieces.append(self.literal_math(token.content, token.meta["reason"], display=True))
+                pieces.append(self.literal_math(token.content, token.meta["reason"], display=True, source_lines=token.map))
             elif kind == "heading_open":
                 heading = True
                 pieces.append(r"\subsubsection*{")

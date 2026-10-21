@@ -34,8 +34,9 @@ class C_HistoryRepository(I_HistoryRepository):
             self._search_config.getCjkPattern().pattern, self._search_config.getCjkPattern().flags,
         ]).encode()).hexdigest()
         self._search_index = C_PersistentRoughMatchIndex(namespace, config=self._search_config, warn=self._store.warn)
-        index_path = self._search_index.getIndexPath().resolve()
-        if index_path.is_relative_to(self._store.home.resolve()) or index_path in self._store.extra_databases:
+        index_paths = self._search_index.getIndexPath(), self._search_index.getLockPath()
+        protected_home = self._store.home.resolve()
+        if index_paths[0].parent.is_relative_to(protected_home) or any(path.resolve().is_relative_to(protected_home) or path.resolve() in self._store.extra_databases for path in index_paths):
             raise ValueError("The search index must be outside the read-only Codex data directory and history databases")
         self._search_sources: dict | None = None
         self._search_documents: dict[str, tuple[str, tuple, bool]] = {}
@@ -84,6 +85,7 @@ class C_HistoryRepository(I_HistoryRepository):
     def roughMatch(self, content: str, maxCnt: int) -> list[D_ChatId]:
         if not self._search_index.validateQuery(content, maxCnt):
             return []
+        self._search_index.checkProcess()
         with self._search_lock, self._search_index.session() as restored:
             if restored:
                 state = self._search_index.getState()

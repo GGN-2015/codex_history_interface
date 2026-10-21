@@ -36,6 +36,7 @@ def prepare_math(source: str, *, normalize: Callable[[str], str], escape_text: C
     pieces = []
     groups: list[bool] = []
     environments = []
+    sized_delimiters: list[tuple[int, int]] = []
     pending_text = None
     beginning = 0
     final_comment = False
@@ -62,8 +63,11 @@ def prepare_math(source: str, *, normalize: Callable[[str], str], escape_text: C
                 raise TexExportError("Document or file-operation environment is not allowed in a formula: " + name)
             if action == "begin":
                 environments.append(name)
-            elif not environments or environments.pop() != name:
-                raise TexExportError("Mismatched mathematical environment")
+            else:
+                if sized_delimiters and sized_delimiters[-1][1] == len(environments):
+                    raise TexExportError(r"Unclosed \left before the end of a mathematical environment")
+                if not environments or environments.pop() != name:
+                    raise TexExportError("Mismatched mathematical environment")
             pending_text = None
         elif token == "{":
             groups.append(bool(groups and groups[-1]) if pending_text is None else pending_text)
@@ -71,6 +75,8 @@ def prepare_math(source: str, *, normalize: Callable[[str], str], escape_text: C
         elif token == "}":
             if not groups:
                 raise TexExportError("Unmatched closing group in mathematical content")
+            if sized_delimiters and sized_delimiters[-1][0] == len(groups):
+                raise TexExportError(r"Unclosed \left before the end of a mathematical group")
             groups.pop()
             pending_text = None
         elif token == "$":
@@ -83,6 +89,11 @@ def prepare_math(source: str, *, normalize: Callable[[str], str], escape_text: C
                 raise TexExportError("File access, execution or TeX redefinition is not allowed in a formula: " + token)
             if command in {"(", ")", "[", "]"} or not command:
                 raise TexExportError("Unmatched or nested mathematical delimiter")
+            if command == "left":
+                sized_delimiters.append((len(groups), len(environments)))
+            elif command == "right":
+                if not sized_delimiters or sized_delimiters.pop() != (len(groups), len(environments)):
+                    raise TexExportError(r"Unmatched \right without a \left in the same mathematical group/environment")
             if command.isspace():
                 token = r"\ "
             pending_text = True if command in TEXT_COMMANDS else False if command == "ensuremath" else None
@@ -91,6 +102,8 @@ def prepare_math(source: str, *, normalize: Callable[[str], str], escape_text: C
     append_text(source[beginning:])
     if groups or environments:
         raise TexExportError("Unclosed mathematical group or environment")
+    if sized_delimiters:
+        raise TexExportError(r"Unclosed \left (missing \right)")
     if final_comment and beginning == len(source):
         pieces.append("\n")
     return "".join(pieces)

@@ -51,11 +51,28 @@ print(reader.getSearchIndexPath())
 chat_ids = reader.roughMatch("交换子", 10)
 ```
 
-`I_SearchConfig` 声明配置字段及普通函数 getter，`C_SearchConfig` 在实例字段中提供默认值；没有 `@property`。其他 getter 包括 `getSchemaVersion()`、`getSqliteTimeout()`、`getDefaultMaxCount()`、`getCjkRanges()`、`getTokenPattern()`、`getCjkPattern()`。配置实例在 reader 构造完成后应保持不变；自定义规则可派生配置类，再创建新 reader。
+`I_SearchConfig` 声明配置字段及普通函数 getter，`C_SearchConfig` 在实例字段中提供默认值；没有 `@property`。其他 getter 包括 `getSchemaVersion()`、`getSqliteTimeout()`、`getSqliteWriteCacheKiB()`、`getLockTimeout()`、`getLockPollInterval()`、`getDefaultMaxCount()`、`getCjkRanges()`、`getTokenPattern()`、`getCjkPattern()`。配置实例在 reader 构造完成后应保持不变；自定义规则可派生配置类，再创建新 reader。直接实现 `I_SearchConfig` 的自定义类需要实现全部抽象 getter，包括锁超时与轮询间隔；新增的 `getSqliteWriteCacheKiB()` 提供兼容默认值，旧自定义类不必新增实现。
 
 索引文件名包含格式版本及数据源命名空间的 SHA-256；命名空间由规范化数据目录、额外数据库路径集合及分词规则确定。不同数据源互不混用，同一来源的多个 reader/进程可以共享。`getSearchIndexPath()` 返回具体文件路径，但不会立即创建文件；空查询和 `maxCnt=0` 也不会创建索引。
 
 缓存保存完整标题、词项、词频、字段长度、来源路径和差分指纹，不保存整段消息、系统提示或思考正文。词项仍可能包含敏感内容，应将索引目录视为私人历史数据，不共享或提交到 Git。索引必须位于只读 Codex 数据目录之外；程序仅写入自己管理的缓存，不修改原始历史。
+
+## 写入缓存与排序
+
+持久化索引将每个待更新对话的词项按主键中的 `term` 排序后批量写入，改善 SQLite B-tree 的访问局部性；词项、词频、字段长度、检索结果和缓存格式不变，已有索引无需重建。
+
+`getSqliteWriteCacheKiB()` 默认返回 `65536`，即 64 MiB 的 SQLite 页缓存预算。仅在当前事务第一次更新文档前调整该索引连接的 `PRAGMA cache_size`，同一事务只设置一次；查询和仅删除文档的事务维持 SQLite 默认缓存。页缓存按需使用，连接在事务结束时关闭，不影响原始历史数据库连接，也不改变日志模式、同步级别或跨进程锁协议。
+
+可派生配置类降低写入预算，单位为 KiB，允许范围为 `1` 至 `2147483647` 的整数；布尔值、非整数及越界值会在写入文档前抛出 `ValueError`，并回滚当前事务：
+
+```python
+class C_SmallWriteCacheConfig(C_SearchConfig):
+    def __init__(self, index_directory=None):
+        super().__init__(index_directory)
+        self._sqlite_write_cache_kib = 16 * 1024
+
+reader = C_CodexInterface(search_config=C_SmallWriteCacheConfig())
+```
 
 ## 差分更新与复杂度
 
@@ -63,11 +80,35 @@ chat_ids = reader.roughMatch("交换子", 10)
 
 SQLite 回退正文使用按对话 ID 计算的 BLAKE2 内容指纹，覆盖相关消息行、顺序字段和 `thread_turns.final_agent_item_id`。共享投影库发生变化时，需要只读检查依赖该库的各对话指纹，但仅重新解析和分词指纹变化的对话；新增行、原地修改或删除一项不会重建其他对话。检查指纹不解析 JSON、不调用可见消息合并或分词；这仍可能读取该库中回退对话的原始行，不意味着数据库发生变化后完全不读取无关行。库文件指纹不变时复用缓存的对话指纹；已有可见 JSONL 的对话不计算未使用的投影正文指纹。读取期间来源发生变化时，下一次查询重试相关对话，不把旧正文永久绑定到新指纹。索引仍以对话为增量单位，并非仅对新增字节分词；变更时的元数据刷新和日志头发现也不是全文索引重建。
 
-令 `T` 为首次参与索引的文字量、`F` 为历史来源文件数、`D` 为对话数、`V` 为索引词项数、`U` 为不同查询特征数、`P` 为查询特征对应的倒排项数、`M` 为候选对话数、`K=maxCnt`：首次分词为 `O(T)`，另有 SQLite 倒排写入成本，磁盘空间与不同“特征—对话”组合数成正比。缓存后的查询约为 `O(F + D + |content| + U log U + U log V + P + M log K)`，其中 `F + D` 包含来源检查及轻量元数据处理；不随全部消息正文长度增长。查询特征排序保证评分稳定；`K=1` 时选择为线性，`K>=M` 时最多对候选排序。常见词可能命中大多数对话，但仍不扫描消息正文。
+令 `T` 为首次参与索引的文字量、`F` 为历史来源文件数、`D` 为对话数、`V` 为索引词项数、`U` 为不同查询特征数、`P` 为查询特征对应的倒排项数、`M` 为候选对话数、`K=maxCnt`：首次分词为 `O(T)`；每个更新文档含 `V_d` 个不同词项时，写入前排序为 `O(V_d log V_d)`，另有 SQLite 倒排写入成本。磁盘空间与不同“特征—对话”组合数成正比。缓存后的查询约为 `O(F + D + |content| + U log U + U log V + P + M log K)`，其中 `F + D` 包含来源检查及轻量元数据处理；不随全部消息正文长度增长。查询特征排序保证评分稳定；`K=1` 时选择为线性，`K>=M` 时最多对候选排序。常见词可能命中大多数对话，但仍不扫描消息正文。
 
-SQLite 事务将单轮差分倒排项和来源指纹一起提交，失败时一起回滚；写锁协调不同进程，未变更的查询不会改写索引内容。另一个进程提交后，现有 reader 会检测缓存代次并重新加载轻量元数据。来源读取警告会随索引保留，并在新 reader 中通过 `HistoryReadWarning` 和 `diagnostics` 报告。
+SQLite 事务将单轮差分倒排项和来源指纹一起提交，失败时一起回滚；独立的跨进程锁还覆盖数据库打开、故障恢复和关闭。未变更的查询不会改写索引内容。另一个进程提交后，现有 reader 会检测缓存唯一标识与提交代次，重新加载轻量元数据。旧缓存首次补充唯一标识时只更新元数据，不重新分词。来源读取警告会随索引保留，并在新 reader 中通过 `HistoryReadWarning` 和 `diagnostics` 报告。
 
 损坏、校验失败或版本不兼容的缓存会保留为同目录的 `.invalid-随机标识` 备份，告警后重新建立；磁盘不可写、数据库锁超时等操作错误直接报告，不伪装成空结果或静默退回全量内存检索。文件指纹不是跨数据库/日志的原子快照，也不能发现刻意保留全部指纹的原地改写。需要强制重建时，先停止访问该缓存的进程，再删除 `getSearchIndexPath()` 返回的专属索引文件；下次检索重建。不要删除或修改 Codex 原始数据库及其 WAL/SHM 文件。
+
+## 多进程并发与故障恢复
+
+同一索引的每次操作按“实例线程锁 → 同目录 `.sqlite3.lock` 跨进程独占锁 → SQLite `BEGIN IMMEDIATE` 事务”执行。锁范围包括打开数据库、检查缓存代次、比较历史来源、差分更新、查询、提交/回滚及关闭数据库；读查询也遵守该顺序。因此不同进程不会同时重建同一份缓存、覆盖另一进程的提交或读到半成品。不同数据源/命名空间使用独立锁，不互相串行化。
+
+- Windows 使用 `msvcrt.locking` 的字节锁，POSIX 使用 `fcntl.flock`；不是通过文件是否存在或 PID 文本猜测锁状态。`.lock` 文件始终保留，不在事务结束后删除、改名或替换，避免锁文件身份变化造成两个进程各持一把锁。
+- 缓存隔离/重建发生在同一把锁内；相关 `-journal`、`-wal`、`-shm` 副文件与数据库归入同一备份组，副文件先移走、数据库最后移走。数据库缺失时，先隔离残留副文件，再创建新数据库，不将旧日志混到新缓存中。
+- 写进程被强制终止后，系统释放其文件锁，后续进程交由 SQLite 恢复未提交事务；文档倒排项与指纹不会只提交一半。构建或恢复过程被终止也不需要手工删除 `.lock`，后续进程可以接管。
+- 等待跨进程锁的默认上限是 30 秒，`getLockPollInterval()` 默认为 0.05 秒；SQLite 自身的忙等待另由 `getSqliteTimeout()` 控制，默认为 30 秒。等待超时抛出 `HistoryUnavailableError`，不删除健康缓存、不假装查无结果。较大的首次构建可以提高锁等待上限：
+
+```python
+from codex_history_interface import C_CodexInterface, C_SearchConfig
+
+class C_LongWaitSearchConfig(C_SearchConfig):
+    def __init__(self, index_directory=None):
+        super().__init__(index_directory)
+        self._lock_timeout = 120.0
+
+reader = C_CodexInterface(search_config=C_LongWaitSearchConfig())
+```
+
+每个进程自行构造 reader；不要跨进程传递 reader/index，也不要在活跃查询中 fork。继承自其他进程的实例会在取得线程锁或使用数据库前抛出 `HistoryUnavailableError`；`multiprocessing` 推荐使用 `spawn`，在工作进程中创建 reader。升级后应重启所有共享索引的旧进程，未使用此锁协议的旧版本不能与新版混用同一缓存。
+
+缓存应放在本机支持正常文件锁的磁盘上；不承诺多机共用网络盘/NFS 的锁语义。其他程序不应绕过接口直接修改缓存，使用期间不能手工删除或替换数据库、锁文件或副文件。需要清理或整套迁移时先停止所有使用者。原始 Codex 历史仍只读访问，缓存事务不代表历史来源的跨文件原子快照。
 
 ## CLI 检索
 

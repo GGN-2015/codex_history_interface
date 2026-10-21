@@ -28,6 +28,6 @@ reader = C_CodexInterface(
 
 所有历史数据库使用 SQLite `mode=ro` 和 `PRAGMA query_only=ON`，历史 JSONL 和 Codex 标题索引仅以二进制只读模式打开。没有归档、重命名、修复、迁移、删除、checkpoint 或写回历史的接口；不会访问 `auth.json`、令牌或其他与历史无关的秘密。
 
-程序管理的检索缓存与原始历史分离，默认写入当前用户的 `~/.codex_history_interface/indexes`，也可通过 `C_SearchConfig`、`CODEX_HISTORY_INDEX_DIR` 或 CLI `--index-dir` 指定任意可写位置。该目录不能位于 Codex 数据目录内，也不能覆盖额外指定的历史数据库。TeX 导出也只能写到历史目录之外。索引路径、隐私和差分机制见[检索文档](search.md)。
+程序管理的检索缓存与原始历史分离，默认写入当前用户的 `~/.codex_history_interface/indexes`，也可通过 `C_SearchConfig`、`CODEX_HISTORY_INDEX_DIR` 或 CLI `--index-dir` 指定本机可写位置。该目录不能位于 Codex 数据目录内，数据库及 `.lock` 路径也不能指向历史文件；即使索引文件链接到外部位置，也不允许在历史目录内创建锁或副文件。TeX 导出也只能写到历史目录之外。`.lock` 是持久的跨进程锁载体，不应在使用期间删除；索引路径、隐私、差分及并发机制见[检索文档](search.md)。
 
 SQLite 正常读取 WAL 可能参与锁和共享内存协调；“只读”指不修改历史内容，不等同于保证整个文件系统没有锁/共享内存活动。不可删除 WAL、SHM 或锁文件来解决读取错误。

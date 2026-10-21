@@ -262,6 +262,80 @@ print(json.dumps({'ids': ids, 'reads': [call.args[0].identity for call in reads.
         self.assertTrue(reopened.removeDocument("chat-2"))
         self.assertEqual(set(reopened.getChatList()), {"chat-1", "chat-3"})
 
+    def test_postings_are_written_in_primary_key_order(self):
+        batches = []
+        original_connect = sqlite3.connect
+
+        class RecordingConnection(sqlite3.Connection):
+            def executemany(self, sql, parameters):
+                if sql.startswith("INSERT INTO postings"):
+                    parameters = list(parameters)
+                    batches.append(parameters)
+                return super().executemany(sql, parameters)
+
+        def connect(*arguments, **keywords):
+            return original_connect(*arguments, **keywords, factory=RecordingConnection)
+
+        index = C_PersistentRoughMatchIndex("sorted", config=C_SearchConfig(self.root / "standalone"))
+        with patch.object(sqlite3, "connect", side_effect=connect), index.session():
+            index.updateDocument("chat-1", "Unicode 全角Ａ", ["Markdown 表格 nebula", "重复词 nebula"])
+            index.updateDocument("chat-2", "其他标题", "Python rendering")
+            index.updateDocument("chat-1", "更新标题")
+        self.assertEqual(len(batches), 3)
+        for batch in batches:
+            terms = [row[0] for row in batch]
+            self.assertEqual(terms, sorted(set(terms)))
+        self.assertEqual(index.roughMatch("nebula", 1), ["chat-1"])
+
+    def test_write_cache_is_lazy_and_configured_once_per_session(self):
+        config = C_SearchConfig(self.root / "standalone")
+        index = C_PersistentRoughMatchIndex("write-cache", config=config)
+        with index.session():
+            connection = index._connection
+            initial_cache = connection.execute("PRAGMA cache_size").fetchone()[0]
+            settings = [connection.execute("PRAGMA " + name).fetchone()[0] for name in ("journal_mode", "synchronous")]
+            statements = []
+            connection.set_trace_callback(statements.append)
+            self.assertFalse(index._write_cache_configured)
+            index.updateDocument("chat-1", "标题", "nebula")
+            index.updateDocument("chat-2", "其他标题", "quasar")
+            self.assertEqual(connection.execute("PRAGMA cache_size").fetchone()[0], -65536)
+            self.assertEqual(sum(statement.startswith("PRAGMA cache_size = ") for statement in statements), 1)
+            self.assertEqual([connection.execute("PRAGMA " + name).fetchone()[0] for name in ("journal_mode", "synchronous")], settings)
+        self.assertFalse(index._write_cache_configured)
+        with index.session():
+            self.assertEqual(index._connection.execute("PRAGMA cache_size").fetchone()[0], initial_cache)
+            self.assertEqual(index.roughMatch("nebula", 1), ["chat-1"])
+            self.assertFalse(index._write_cache_configured)
+            index.updateDocument("chat-1", "更新标题", "nebula")
+            self.assertEqual(index._connection.execute("PRAGMA cache_size").fetchone()[0], -65536)
+
+    def test_custom_write_cache_does_not_change_history_connections(self):
+        config = C_SearchConfig(self.root / "standalone")
+        config._sqlite_write_cache_kib = 1024
+        index = C_PersistentRoughMatchIndex("custom-cache", config=config)
+        history_cache = self.connection.execute("PRAGMA cache_size").fetchone()[0]
+        with index.session():
+            index.updateDocument("chat", "标题", "nebula")
+            self.assertEqual(index._connection.execute("PRAGMA cache_size").fetchone()[0], -1024)
+        self.assertEqual(self.connection.execute("PRAGMA cache_size").fetchone()[0], history_cache)
+
+    def test_invalid_write_cache_rolls_back_without_quarantining_healthy_index(self):
+        config = C_SearchConfig(self.root / "standalone")
+        index = C_PersistentRoughMatchIndex("invalid-cache", config=config)
+        index.updateDocument("chat", "标题", "nebula")
+        before = index.getIndexPath().read_bytes()
+        for invalid in (0, -1, True, 1.5, "1024; DROP TABLE documents", None, 2147483648):
+            with self.subTest(cache_kib=invalid):
+                config._sqlite_write_cache_kib = invalid
+                with self.assertRaisesRegex(ValueError, "write cache size"):
+                    index.updateDocument("chat", "替换标题", "quasar")
+                self.assertEqual(index.getIndexPath().read_bytes(), before)
+                self.assertFalse(list(index.getIndexPath().parent.glob("*.invalid-*")))
+                self.assertFalse(index._write_cache_configured)
+                self.assertEqual(index.roughMatch("nebula", 1), ["chat"])
+                self.assertEqual(index.roughMatch("quasar", 1), [])
+
     def test_standalone_index_is_safe_for_concurrent_threads(self):
         index = C_PersistentRoughMatchIndex("threads", config=C_SearchConfig(self.root / "standalone"))
         index.updateDocument("chat", "并发", "nebula")

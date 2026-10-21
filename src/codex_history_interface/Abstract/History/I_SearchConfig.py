@@ -9,6 +9,9 @@ class I_SearchConfig(ABC):
     _index_directory: Path
     _schema_version: int
     _sqlite_timeout: float
+    _sqlite_write_cache_kib: int
+    _lock_timeout: float
+    _lock_poll_interval: float
     _cjk_ranges: str
     _token_pattern: Pattern[str]
     _cjk_pattern: Pattern[str]
@@ -24,6 +27,17 @@ class I_SearchConfig(ABC):
 
     @abstractmethod
     def getSqliteTimeout(self) -> float:
+        raise NotImplementedError
+
+    def getSqliteWriteCacheKiB(self) -> int:
+        return 64 * 1024
+
+    @abstractmethod
+    def getLockTimeout(self) -> float:
+        raise NotImplementedError
+
+    @abstractmethod
+    def getLockPollInterval(self) -> float:
         raise NotImplementedError
 
     @abstractmethod
